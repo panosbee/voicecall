@@ -412,6 +412,7 @@ export const el: Translations = {
     bookedViaAI: 'Κλεισμένα μέσω AI',
     callsToAppointments: 'Κλήσεις → Ραντεβού',
     total: 'Σύνολο',
+    minutes: 'λεπτά',
     completionRate: 'Ποσοστό Ολοκλήρωσης Κλήσεων',
     completedLabel: 'ολοκληρωμένες',
     missedLabel: 'αναπάντητες',

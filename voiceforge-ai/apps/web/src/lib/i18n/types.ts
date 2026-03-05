@@ -351,6 +351,7 @@ export interface Translations {
     bookedViaAI: string;
     callsToAppointments: string;
     total: string;
+    minutes: string;
     completionRate: string;
     completedLabel: string;
     missedLabel: string;

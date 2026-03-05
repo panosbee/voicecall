@@ -412,6 +412,7 @@ export const en: Translations = {
     bookedViaAI: 'Booked via AI',
     callsToAppointments: 'Calls → Appointments',
     total: 'Total',
+    minutes: 'minutes',
     completionRate: 'Call Completion Rate',
     completedLabel: 'completed',
     missedLabel: 'missed',

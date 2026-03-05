@@ -15,9 +15,9 @@ import type { ApiResponse } from '@voiceforge/shared';
 
 interface AnalyticsSummary {
   totalCalls: number;
-  totalDuration: number;
-  avgDuration: number;
-  completedCalls: number;
+  totalMinutes: number;
+  averageDuration: number;
+  averageSentiment: number;
   missedCalls: number;
   appointmentsBooked: number;
 }
@@ -53,15 +53,16 @@ export default function AnalyticsPage() {
 
   const stats = data ?? {
     totalCalls: 0,
-    totalDuration: 0,
-    avgDuration: 0,
-    completedCalls: 0,
+    totalMinutes: 0,
+    averageDuration: 0,
+    averageSentiment: 0,
     missedCalls: 0,
     appointmentsBooked: 0,
   };
 
+  const completedCalls = stats.totalCalls - stats.missedCalls;
   const completionRate = stats.totalCalls > 0
-    ? Math.round((stats.completedCalls / stats.totalCalls) * 100)
+    ? Math.round((completedCalls / stats.totalCalls) * 100)
     : 0;
 
   const kpiCards = [
@@ -75,7 +76,7 @@ export default function AnalyticsPage() {
     },
     {
       label: t.analytics.completed,
-      value: stats.completedCalls.toString(),
+      value: completedCalls.toString(),
       subtext: `${completionRate}% ${t.analytics.rate}`,
       icon: PhoneIncoming,
       color: 'text-success-500',
@@ -91,8 +92,8 @@ export default function AnalyticsPage() {
     },
     {
       label: t.analytics.avgCallTime,
-      value: formatDuration(stats.avgDuration),
-      subtext: `${t.analytics.total}: ${formatDuration(stats.totalDuration)}`,
+      value: formatDuration(stats.averageDuration),
+      subtext: `${t.analytics.total}: ${stats.totalMinutes} ${t.analytics.minutes}`,
       icon: Clock,
       color: 'text-warning-500',
       bgColor: 'bg-warning-50',
@@ -154,7 +155,7 @@ export default function AnalyticsPage() {
           <span className="text-lg font-bold text-text-primary min-w-[60px] text-right">{completionRate}%</span>
         </div>
         <div className="flex justify-between mt-2 text-xs text-text-tertiary">
-          <span>{stats.completedCalls} {t.analytics.completedLabel}</span>
+          <span>{completedCalls} {t.analytics.completedLabel}</span>
           <span>{stats.missedCalls} {t.analytics.missedLabel}</span>
         </div>
       </Card>
