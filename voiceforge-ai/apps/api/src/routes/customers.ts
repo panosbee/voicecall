@@ -37,7 +37,7 @@ const registerCustomerSchema = z.object({
   ownerName: z.string().min(2).max(100),
   email: z.string().email().optional(), // fallback to JWT email
   phone: z.string().min(10).max(20),
-  plan: z.enum(['starter', 'pro', 'business']).optional().default('starter'),
+  plan: z.enum(['basic', 'pro', 'enterprise']).optional().default('basic'),
   userRole: z.enum(['naive', 'expert']).optional().default('naive'),
   timezone: z.string().optional().default('Europe/Athens'),
   locale: z.string().optional().default('el-GR'),

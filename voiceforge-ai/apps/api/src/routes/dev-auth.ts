@@ -135,7 +135,7 @@ devAuthRoutes.post('/register', zValidator('json', registerSchema), async (c) =>
       phone: '+306900000000',
       timezone: 'Europe/Athens',
       locale: 'el-GR',
-      plan: userRole === 'expert' ? 'business' : 'starter',
+      plan: userRole === 'expert' ? 'enterprise' : 'basic',
       userRole: userRole,
     })
     .returning();

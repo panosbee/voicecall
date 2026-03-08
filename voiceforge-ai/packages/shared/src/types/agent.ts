@@ -28,6 +28,13 @@ export interface Agent {
   telephonySettings: TelephonySettings;
   transcriptionSettings: TranscriptionSettings;
   isDefault: boolean; // Is this the customer's primary agent?
+  // Widget embed configuration
+  widgetEnabled: boolean;
+  widgetColor: string;
+  widgetPosition: 'bottom-right' | 'bottom-left';
+  widgetButtonText: string;
+  widgetIconType: 'phone' | 'mic' | 'chat';
+  widgetAllowedOrigins: string[];
   createdAt: Date;
   updatedAt: Date;
 }

@@ -246,6 +246,37 @@ export interface Translations {
     aiKnowledgeWizardDone: string;
     aiKnowledgeWizardError: string;
     wizardTab: string;
+    // Widget embed
+    embedTab: string;
+    embedTitle: string;
+    embedDescription: string;
+    embedEnable: string;
+    embedEnabled: string;
+    embedDisabled: string;
+    embedEnableHint: string;
+    embedCodeTitle: string;
+    embedCodeDescription: string;
+    embedCopied: string;
+    embedCopyCode: string;
+    embedPreview: string;
+    embedCustomize: string;
+    embedButtonText: string;
+    embedButtonTextPlaceholder: string;
+    embedColor: string;
+    embedPosition: string;
+    embedPositionRight: string;
+    embedPositionLeft: string;
+    embedIconType: string;
+    embedIconPhone: string;
+    embedIconMic: string;
+    embedIconChat: string;
+    embedAllowedOrigins: string;
+    embedAllowedOriginsHint: string;
+    embedAllowedOriginsPlaceholder: string;
+    embedSaveFirst: string;
+    embedSaveConfig: string;
+    embedConfigSaved: string;
+    embedConfigError: string;
   };
 
   // ── Assign Number Modal ────────────────────────────────────────

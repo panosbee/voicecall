@@ -85,6 +85,14 @@ export const agents = pgTable('agents', {
   // Insights
   insightGroupId: text('insight_group_id'),
 
+  // Widget embed config
+  widgetEnabled: boolean('widget_enabled').notNull().default(false),
+  widgetColor: text('widget_color').notNull().default('#6366f1'),
+  widgetPosition: text('widget_position').notNull().default('bottom-right'),
+  widgetButtonText: text('widget_button_text').notNull().default('Talk to us'),
+  widgetIconType: text('widget_icon_type').notNull().default('phone'),
+  widgetAllowedOrigins: jsonb('widget_allowed_origins').notNull().default('[]'),
+
   // Flags
   isDefault: boolean('is_default').notNull().default(false),
 

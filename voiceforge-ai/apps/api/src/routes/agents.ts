@@ -62,6 +62,13 @@ const updateAgentSchema = z.object({
   voiceStability: z.number().min(0).max(1).optional(),
   voiceSimilarity: z.number().min(0).max(1).optional(),
   voiceSpeed: z.number().min(0.7).max(1.3).optional(),
+  // Widget embed config
+  widgetEnabled: z.boolean().optional(),
+  widgetColor: z.string().max(20).optional(),
+  widgetPosition: z.enum(['bottom-right', 'bottom-left']).optional(),
+  widgetButtonText: z.string().max(50).optional(),
+  widgetIconType: z.enum(['phone', 'mic', 'chat']).optional(),
+  widgetAllowedOrigins: z.array(z.string().url()).optional(),
 });
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -712,6 +719,12 @@ agentRoutes.patch('/:id', zValidator('json', updateAgentSchema), async (c) => {
         ...(body.voiceStability !== undefined ? { voiceStability: body.voiceStability } : {}),
         ...(body.voiceSimilarity !== undefined ? { voiceSimilarity: body.voiceSimilarity } : {}),
         ...(body.voiceSpeed !== undefined ? { voiceSpeed: body.voiceSpeed } : {}),
+        ...(body.widgetEnabled !== undefined ? { widgetEnabled: body.widgetEnabled } : {}),
+        ...(body.widgetColor ? { widgetColor: body.widgetColor } : {}),
+        ...(body.widgetPosition ? { widgetPosition: body.widgetPosition } : {}),
+        ...(body.widgetButtonText ? { widgetButtonText: body.widgetButtonText } : {}),
+        ...(body.widgetIconType ? { widgetIconType: body.widgetIconType } : {}),
+        ...(body.widgetAllowedOrigins !== undefined ? { widgetAllowedOrigins: body.widgetAllowedOrigins } : {}),
         updatedAt: new Date(),
       })
       .where(eq(agents.id, agentId))

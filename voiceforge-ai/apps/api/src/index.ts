@@ -37,6 +37,7 @@ import { kbWizardRoutes } from './routes/kb-wizard.js';
 import { supportChatRoutes } from './routes/support-chat.js';
 import { adminRoutes } from './routes/admin.js';
 import { registrationRoutes } from './routes/registration.js';
+import { widgetRoutes } from './routes/widget.js';
 
 // ── App Setup ────────────────────────────────────────────────────
 
@@ -108,6 +109,10 @@ app.route('/webhooks/elevenlabs', elevenlabsWebhookRoutes);
 
 // Public registration & license activation (no auth)
 app.route('/registration', registrationRoutes);
+
+// Widget embed routes (public — accessed from customer websites, CORS *)
+app.use('/widget/*', cors({ origin: '*', allowMethods: ['GET', 'OPTIONS'], maxAge: 86400 }));
+app.route('/widget', widgetRoutes);
 
 // Admin panel (protected by ADMIN_SECRET)
 app.route('/admin', adminRoutes);
