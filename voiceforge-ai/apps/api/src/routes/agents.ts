@@ -532,6 +532,7 @@ agentRoutes.post('/', zValidator('json', createAgentSchema), async (c) => {
           voiceStability: body.voiceStability,
           voiceSimilarity: body.voiceSimilarity,
           voiceSpeed: body.voiceSpeed,
+          knowledgeBaseDocs,
         });
         elevenlabsAgentId = body.existingElevenlabsAgentId;
         log.info({ agentId: elevenlabsAgentId }, 'Reused preview agent');

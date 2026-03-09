@@ -19,6 +19,7 @@ import {
   CheckCircle2,
   X,
   Plus,
+  RefreshCw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useI18n } from '@/lib/i18n';
@@ -276,6 +277,21 @@ export function KnowledgeBaseUpload({ agentId, onDocumentsChange, compact = fals
 
   // ── Remove failed upload from list ─────────────────────────────
 
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const handleResync = async () => {
+    if (!agentId) return;
+    setIsSyncing(true);
+    try {
+      await api.post<ApiResponse>(`/api/knowledge-base/resync/${agentId}`);
+      toast.success(t.knowledgeBase.resyncSuccess);
+    } catch {
+      toast.error(t.knowledgeBase.resyncError);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   const dismissUpload = (uploadId: string) => {
     setUploadingFiles((prev) => prev.filter((f) => f.id !== uploadId));
   };
@@ -471,8 +487,9 @@ export function KnowledgeBaseUpload({ agentId, onDocumentsChange, compact = fals
 
       {/* Documents List */}
       {documents.length > 0 && (
-        <div className="border border-border rounded-xl overflow-hidden divide-y divide-border">
-          {documents.map((doc) => (
+        <div className="space-y-2">
+          <div className="border border-border rounded-xl overflow-hidden divide-y divide-border">
+            {documents.map((doc) => (
             <div
               key={doc.id}
               className="flex items-center gap-3 px-4 py-3 hover:bg-surface-secondary transition-colors"
@@ -519,6 +536,20 @@ export function KnowledgeBaseUpload({ agentId, onDocumentsChange, compact = fals
               </div>
             </div>
           ))}
+          </div>
+          {/* Re-sync KB button */}
+          {agentId && documents.some((d) => d.status === 'ready') && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleResync}
+              disabled={isSyncing}
+              className="w-full"
+            >
+              {isSyncing ? <Spinner size="sm" className="mr-1.5" /> : <RefreshCw className="w-3.5 h-3.5 mr-1.5" />}
+              {t.knowledgeBase.resync}
+            </Button>
+          )}
         </div>
       )}
 

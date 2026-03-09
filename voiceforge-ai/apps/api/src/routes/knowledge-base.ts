@@ -545,3 +545,61 @@ knowledgeBaseRoutes.post('/:id/attach', zValidator('json', attachSchema), async 
 
   return c.json<ApiResponse>({ success: true, data: { id: docId, agentId } });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// POST /knowledge-base/resync/:agentId — Force re-sync all KB docs for an agent
+// ═══════════════════════════════════════════════════════════════════
+
+const resyncSchema = z.object({});
+
+knowledgeBaseRoutes.post('/resync/:agentId', async (c) => {
+  const user = c.get('user');
+  const agentId = c.req.param('agentId');
+
+  const customer = await getCustomerByUserId(user.sub);
+  if (!customer) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Customer not found' } }, 404);
+  }
+
+  const agent = await db.query.agents.findFirst({
+    where: and(eq(agents.id, agentId), eq(agents.customerId, customer.id)),
+  });
+
+  if (!agent) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Agent not found' } }, 404);
+  }
+
+  if (!agent.elevenlabsAgentId) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'BAD_REQUEST', message: 'Agent has no ElevenLabs ID' } }, 400);
+  }
+
+  const agentDocs = await db.query.knowledgeBaseDocuments.findMany({
+    where: and(
+      eq(knowledgeBaseDocuments.agentId, agentId),
+      eq(knowledgeBaseDocuments.status, 'ready'),
+    ),
+  });
+
+  if (agentDocs.length === 0) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'BAD_REQUEST', message: 'No ready KB documents to sync' } }, 400);
+  }
+
+  if (isDevBypass()) {
+    log.info({ agentId, docCount: agentDocs.length }, 'Dev bypass: Skipping KB re-sync');
+    return c.json<ApiResponse>({ success: true, data: { synced: agentDocs.length, message: 'Dev bypass — skipped ElevenLabs sync' } });
+  }
+
+  try {
+    await elevenlabsService.attachKBToAgent(
+      agent.elevenlabsAgentId,
+      agentDocs.map((d) => ({ id: d.elevenlabsDocId, name: d.name })),
+    );
+
+    log.info({ agentId, elevenlabsAgentId: agent.elevenlabsAgentId, docCount: agentDocs.length }, 'KB force re-synced');
+
+    return c.json<ApiResponse>({ success: true, data: { synced: agentDocs.length } });
+  } catch (error) {
+    log.error({ error, agentId }, 'KB re-sync failed');
+    return c.json<ApiResponse>({ success: false, error: { code: 'ELEVENLABS_ERROR', message: 'Failed to re-sync KB with ElevenLabs' } }, 500);
+  }
+});

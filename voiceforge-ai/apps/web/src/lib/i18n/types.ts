@@ -457,6 +457,9 @@ export interface Translations {
     noDocuments: string;
     deleteTitle: string;
     fileFormatsHint: string;
+    resync: string;
+    resyncSuccess: string;
+    resyncError: string;
   };
 
   // ── Flows (Expert Mode) ─────────────────────────────────────────

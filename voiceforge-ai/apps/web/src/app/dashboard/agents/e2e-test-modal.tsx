@@ -21,7 +21,7 @@ interface E2ETestModalProps {
 }
 
 export function E2ETestModal({ agentId, agentName, onClose }: E2ETestModalProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
 
   const [status, setStatus] = useState<'completed' | 'missed' | 'voicemail' | 'failed'>('completed');
   const [sentiment, setSentiment] = useState(4);
@@ -44,6 +44,7 @@ export function E2ETestModal({ agentId, agentName, onClose }: E2ETestModalProps)
           sentiment,
           appointmentBooked,
           durationSeconds,
+          locale,
         },
       );
       if (result.success && result.data) {

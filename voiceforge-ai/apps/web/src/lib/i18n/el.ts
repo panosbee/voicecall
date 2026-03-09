@@ -517,6 +517,9 @@ export const el: Translations = {
     noDocuments: 'Δεν έχουν ανέβει έγγραφα ακόμα. Ο βοηθός θα απαντά μόνο βάσει των οδηγιών.',
     deleteTitle: 'Διαγραφή',
     fileFormatsHint: 'PDF, DOCX, TXT, MD, CSV, HTML, EPUB — Μέχρι',
+    resync: 'Επανασυγχρονισμός KB',
+    resyncSuccess: 'Η Βάση Γνώσεων επανασυγχρονίστηκε με τον AI agent',
+    resyncError: 'Αποτυχία επανασυγχρονισμού Βάσης Γνώσεων',
   },
 
   // ── Flows (Expert Mode) ─────────────────────────────────────────

@@ -517,6 +517,9 @@ export const en: Translations = {
     noDocuments: 'No documents uploaded yet. The assistant will respond based on instructions only.',
     deleteTitle: 'Delete',
     fileFormatsHint: 'PDF, DOCX, TXT, MD, CSV, HTML, EPUB — Up to',
+    resync: 'Re-sync KB',
+    resyncSuccess: 'Knowledge Base re-synced with AI agent',
+    resyncError: 'Failed to re-sync Knowledge Base',
   },
 
   // ── Flows (Expert Mode) ─────────────────────────────────────────
