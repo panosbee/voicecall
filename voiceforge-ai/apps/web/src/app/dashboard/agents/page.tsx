@@ -29,7 +29,7 @@ export default function AgentsPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [testingAgent, setTestingAgent] = useState<{ id: string; name: string } | null>(null);
   const [assigningNumber, setAssigningNumber] = useState<{ id: string; name: string } | null>(null);
-  const [e2eTestAgent, setE2eTestAgent] = useState<{ id: string; elevenlabsAgentId: string; name: string } | null>(null);
+  const [e2eTestAgent, setE2eTestAgent] = useState<{ id: string; name: string } | null>(null);
 
   const loadAgents = useCallback(async () => {
     try {
@@ -206,14 +206,12 @@ export default function AgentsPage() {
                         {t.agents.assignNumber}
                       </Button>
                     )}
-                    {agent.elevenlabsAgentId && !agent.elevenlabsAgentId.startsWith('dev_') && (
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={() =>
                         setE2eTestAgent({
                           id: agent.id,
-                          elevenlabsAgentId: agent.elevenlabsAgentId!,
                           name: agent.name,
                         })
                       }
@@ -222,7 +220,6 @@ export default function AgentsPage() {
                     >
                       {t.agents.e2eTest}
                     </Button>
-                    )}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -290,7 +287,6 @@ export default function AgentsPage() {
       {e2eTestAgent && (
         <E2ETestModal
           agentId={e2eTestAgent.id}
-          elevenlabsAgentId={e2eTestAgent.elevenlabsAgentId}
           agentName={e2eTestAgent.name}
           onClose={() => setE2eTestAgent(null)}
         />
