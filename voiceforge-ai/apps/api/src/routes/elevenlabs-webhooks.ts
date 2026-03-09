@@ -5,7 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { Hono } from 'hono';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, gte, lte, desc } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { agents, calls, webhookEvents, appointments, customers, callerMemories } from '../db/schema/index.js';
 import { createLogger } from '../config/logger.js';
@@ -142,37 +142,149 @@ elevenlabsWebhookRoutes.post('/post-conversation', async (c) => {
     const extractedData = payload.analysis?.data_collection ?? {};
     const callSuccessful = payload.analysis?.call_successful;
 
-    // Check if an appointment was booked
-    const appointmentBooked = !!(extractedData.appointment_date || extractedData.appointment_time);
+    // Check if an appointment was booked (from analysis OR transcript patterns)
+    let appointmentBooked = !!(extractedData.appointment_date || extractedData.appointment_time);
+    let appointmentDate = extractedData.appointment_date ?? null;
+    let appointmentTime = extractedData.appointment_time ?? '09:00';
+    let appointmentCallerName = extractedData.caller_name ?? null;
+    let appointmentCallerPhone = extractedData.caller_phone ?? callerNumber;
+    let appointmentNotes = extractedData.appointment_notes ?? null;
+
+    // ── Smart Extraction from Transcript ───────────────────────
+    // If ElevenLabs analysis didn't provide appointment data,
+    // parse the transcript for common patterns
+    if (!appointmentBooked && transcriptText) {
+      const lowerTranscript = transcriptText.toLowerCase();
+
+      // Detect appointment intent from keywords
+      const appointmentKeywords = [
+        'ραντεβού', 'ραντεβου', 'appointment',
+        'θα σας καλέσ', 'θα σε καλέσ', 'θα καλέσ',
+        'θα επικοινωνήσ', 'θα σας πάρ', 'will call',
+        'callback', 'call back', 'call you back',
+      ];
+      const hasAppointmentIntent = appointmentKeywords.some((kw) => lowerTranscript.includes(kw));
+
+      if (hasAppointmentIntent) {
+        appointmentBooked = true;
+
+        // Try to extract date from transcript
+        const datePatterns = [
+          /αύριο|αυριο|tomorrow/i,
+          /μεθαύριο|μεθαυριο|day after tomorrow/i,
+          /(?:στις?\s+)?(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?/,
+          /(\d{1,2})\s+(?:ιανουαρίου|φεβρουαρίου|μαρτίου|απριλίου|μαΐου|ιουνίου|ιουλίου|αυγούστου|σεπτεμβρίου|οκτωβρίου|νοεμβρίου|δεκεμβρίου|january|february|march|april|may|june|july|august|september|october|november|december)/i,
+        ];
+
+        for (const pattern of datePatterns) {
+          const match = transcriptText.match(pattern);
+          if (match) {
+            if (/αύριο|αυριο|tomorrow/i.test(match[0])) {
+              const tomorrow = new Date();
+              tomorrow.setDate(tomorrow.getDate() + 1);
+              appointmentDate = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
+            } else if (/μεθαύριο|μεθαυριο|day after tomorrow/i.test(match[0])) {
+              const dayAfter = new Date();
+              dayAfter.setDate(dayAfter.getDate() + 2);
+              appointmentDate = `${dayAfter.getFullYear()}-${String(dayAfter.getMonth() + 1).padStart(2, '0')}-${String(dayAfter.getDate()).padStart(2, '0')}`;
+            }
+            break;
+          }
+        }
+
+        // Try to extract time from transcript
+        const timeMatch = transcriptText.match(/(?:στις?\s+)?(\d{1,2})[:\.](\d{2})(?:\s*(?:μμ|μ\.μ\.|pm))?/i);
+        if (timeMatch?.[1] && timeMatch[2]) {
+          appointmentTime = `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`;
+        }
+
+        // Try to extract phone number
+        const phoneMatch = transcriptText.match(/(69\d{8}|2\d{9}|\+30\d{10})/);
+        if (phoneMatch?.[1]) {
+          appointmentCallerPhone = phoneMatch[1];
+        }
+
+        // Try to extract caller name from transcript lines
+        const nameMatch = transcriptText.match(/(?:ονομάζομαι|λέγομαι|με λένε|my name is|i'm|i am)\s+([Α-Ωα-ωA-Za-z]+)/i);
+        if (nameMatch?.[1]) {
+          appointmentCallerName = nameMatch[1];
+        }
+
+        // Build appointment notes from relevant transcript context
+        if (!appointmentNotes) {
+          appointmentNotes = summary ?? transcriptText.slice(0, 300);
+        }
+      }
+    }
 
     // Compute sentiment (1-5 scale)
     const sentimentScore = callSuccessful === 'true' ? 5 :
                            callSuccessful === 'false' ? 2 : null;
 
-    // Store the call record
-    const [callRecord] = await db.insert(calls).values({
-      customerId: agent.customerId,
-      agentId: agent.id,
-      telnyxConversationId: conversationId,
-      callerNumber,
-      agentNumber,
-      direction: 'inbound',
-      status: callStatus as any,
-      durationSeconds,
-      transcript: transcriptText || null,
-      telnyxEventId: conversationId,
-      summary,
-      sentiment: sentimentScore,
-      intentCategory: extractedData.intent ?? extractedData.reason ?? null,
-      appointmentBooked,
-      insightsRaw: {
-        analysis: payload.analysis,
-        metadata: payload.metadata,
-        extractedData,
-        conversationStatus: payload.status,
-      },
-      metadata: meta as Record<string, unknown>,
-    }).returning();
+    // ── Dedup: Check if Telnyx already created a call record ────
+    // When both Telnyx and ElevenLabs webhooks fire for the same
+    // conversation, we UPDATE the existing record instead of INSERT
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+    const existingCall = await db.query.calls.findFirst({
+      where: and(
+        eq(calls.agentId, agent.id),
+        gte(calls.startedAt, twoMinutesAgo),
+        lte(calls.startedAt, new Date()),
+      ),
+      orderBy: [desc(calls.startedAt)],
+    });
+
+    let callRecord;
+
+    if (existingCall) {
+      // UPDATE existing record with richer ElevenLabs data
+      const [updated] = await db.update(calls)
+        .set({
+          transcript: transcriptText || existingCall.transcript,
+          summary: summary ?? existingCall.summary,
+          sentiment: sentimentScore ?? existingCall.sentiment,
+          intentCategory: extractedData.intent ?? extractedData.reason ?? existingCall.intentCategory,
+          appointmentBooked,
+          durationSeconds: durationSeconds || existingCall.durationSeconds,
+          status: callStatus as any,
+          insightsRaw: {
+            analysis: payload.analysis,
+            metadata: payload.metadata,
+            extractedData,
+            conversationStatus: payload.status,
+          },
+        })
+        .where(eq(calls.id, existingCall.id))
+        .returning();
+      callRecord = updated;
+      log.info({ callId: existingCall.id, conversationId }, 'Merged ElevenLabs data into existing call record (dedup)');
+    } else {
+      // INSERT new record (no Telnyx record found — e.g., browser widget test)
+      const [inserted] = await db.insert(calls).values({
+        customerId: agent.customerId,
+        agentId: agent.id,
+        telnyxConversationId: conversationId,
+        callerNumber,
+        agentNumber,
+        direction: 'inbound',
+        status: callStatus as any,
+        durationSeconds,
+        transcript: transcriptText || null,
+        telnyxEventId: conversationId,
+        summary,
+        sentiment: sentimentScore,
+        intentCategory: extractedData.intent ?? extractedData.reason ?? null,
+        appointmentBooked,
+        insightsRaw: {
+          analysis: payload.analysis,
+          metadata: payload.metadata,
+          extractedData,
+          conversationStatus: payload.status,
+        },
+        metadata: meta as Record<string, unknown>,
+      }).returning();
+      callRecord = inserted;
+    }
 
     // Log the webhook event for deduplication
     await db.insert(webhookEvents).values({
@@ -227,8 +339,8 @@ elevenlabsWebhookRoutes.post('/post-conversation', async (c) => {
     // ── Store Appointment if Booked ─────────────────────────────
     if (appointmentBooked && callRecord) {
       try {
-        const aptDate = extractedData.appointment_date;
-        const aptTime = extractedData.appointment_time ?? '09:00';
+        const aptDate = appointmentDate;
+        const aptTime = appointmentTime;
 
         // Use customer timezone for proper UTC conversion
         const customerTz = customer?.timezone || 'Europe/Athens';
@@ -240,13 +352,13 @@ elevenlabsWebhookRoutes.post('/post-conversation', async (c) => {
           customerId: agent.customerId,
           agentId: agent.id,
           callId: callRecord.id,
-          callerName: extractedData.caller_name ?? callerNumber,
-          callerPhone: callerNumber,
+          callerName: appointmentCallerName ?? callerNumber,
+          callerPhone: appointmentCallerPhone,
           scheduledAt,
-          notes: extractedData.appointment_notes ?? summary ?? null,
+          notes: appointmentNotes ?? summary ?? null,
           status: 'pending',
         });
-        log.info({ callId: callRecord.id }, 'Appointment record created from post-call data');
+        log.info({ callId: callRecord.id, scheduledAt: scheduledAt.toISOString() }, 'Appointment record created from post-call data');
       } catch (aptErr) {
         log.error({ error: aptErr }, 'Failed to create appointment record');
       }

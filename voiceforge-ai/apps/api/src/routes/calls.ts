@@ -8,7 +8,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq, and, gte, lte, desc, sql, count } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { customers, calls, agents } from '../db/schema/index.js';
+import { customers, calls, agents, appointments } from '../db/schema/index.js';
 import { authMiddleware, type AuthUser } from '../middleware/auth.js';
 import { createLogger } from '../config/logger.js';
 import { getMonthRangeInTimezone } from '../services/timezone.js';
@@ -412,4 +412,61 @@ callRoutes.delete('/e2e-test', async (c) => {
   log.info({ count: result.length, customerId: customer.id }, '🗑️ All E2E test calls deleted');
 
   return c.json<ApiResponse>({ success: true, data: { deletedCount: result.length } });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// GET /calls/calendar/appointments — Appointments for a month
+// Returns appointments on their SCHEDULED date (not call date)
+// ═══════════════════════════════════════════════════════════════════
+
+const appointmentsCalendarSchema = z.object({
+  year: z.coerce.number().int().min(2020).max(2100),
+  month: z.coerce.number().int().min(1).max(12),
+});
+
+callRoutes.get('/calendar/appointments', zValidator('query', appointmentsCalendarSchema), async (c) => {
+  const user = c.get('user');
+  const { year, month } = c.req.valid('query');
+
+  const customer = await db.query.customers.findFirst({
+    where: eq(customers.userId, user.sub),
+  });
+
+  if (!customer) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Customer not found' } }, 404);
+  }
+
+  const customerTz = customer.timezone || 'Europe/Athens';
+  const { startDate, endDate } = getMonthRangeInTimezone(year, month, customerTz);
+
+  const appointmentRecords = await db.query.appointments.findMany({
+    where: and(
+      eq(appointments.customerId, customer.id),
+      gte(appointments.scheduledAt, startDate),
+      lte(appointments.scheduledAt, endDate),
+    ),
+    orderBy: [desc(appointments.scheduledAt)],
+    with: {
+      agent: { columns: { name: true } },
+      call: { columns: { id: true, callerNumber: true, summary: true, transcript: true } },
+    },
+  });
+
+  return c.json<ApiResponse>({
+    success: true,
+    data: appointmentRecords.map((apt) => ({
+      id: apt.id,
+      callerName: apt.callerName,
+      callerPhone: apt.callerPhone,
+      agentName: apt.agent.name,
+      serviceType: apt.serviceType,
+      scheduledAt: apt.scheduledAt.toISOString(),
+      durationMinutes: apt.durationMinutes,
+      status: apt.status,
+      notes: apt.notes,
+      callId: apt.callId,
+      callSummary: apt.call?.summary ?? null,
+    })),
+    meta: { year, month, total: appointmentRecords.length },
+  });
 });

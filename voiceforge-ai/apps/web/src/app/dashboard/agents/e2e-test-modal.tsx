@@ -1,72 +1,90 @@
 // ═══════════════════════════════════════════════════════════════════
 // VoiceForge AI — E2E Test Modal
-// Simulate a complete call lifecycle without needing Telnyx
-// Creates test call records visible in Dashboard, Calls & Calendar
+// Real conversation with Agent via ElevenLabs widget
+// Call records auto-created via webhook → appear in Dashboard, Calls & Calendar
 // ═══════════════════════════════════════════════════════════════════
 
 'use client';
 
-import { useState } from 'react';
-import { Button, Select, Spinner } from '@/components/ui';
+import { useState, useEffect, useRef } from 'react';
+import { Button, Spinner } from '@/components/ui';
 import { api } from '@/lib/api-client';
 import { useI18n } from '@/lib/i18n';
-import { X, FlaskConical, CheckCircle, Trash2 } from 'lucide-react';
+import { X, FlaskConical, Mic, Trash2, AlertCircle, CheckCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ApiResponse } from '@voiceforge/shared';
 
+const WIDGET_SCRIPT_URL = 'https://elevenlabs.io/convai-widget/index.js';
+
 interface E2ETestModalProps {
   agentId: string;
+  elevenlabsAgentId: string;
   agentName: string;
   onClose: () => void;
 }
 
-export function E2ETestModal({ agentId, agentName, onClose }: E2ETestModalProps) {
+export function E2ETestModal({ agentId, elevenlabsAgentId, agentName, onClose }: E2ETestModalProps) {
   const { t } = useI18n();
 
-  const [status, setStatus] = useState<'completed' | 'missed' | 'voicemail' | 'failed'>('completed');
-  const [sentiment, setSentiment] = useState(4);
-  const [appointmentBooked, setAppointmentBooked] = useState(false);
-  const [durationSeconds, setDurationSeconds] = useState(45);
-
-  const [isRunning, setIsRunning] = useState(false);
+  const [isScriptLoaded, setIsScriptLoaded] = useState(false);
+  const [scriptError, setScriptError] = useState(false);
+  const [micPermission, setMicPermission] = useState<'pending' | 'granted' | 'denied'>('pending');
   const [isDeleting, setIsDeleting] = useState(false);
-  const [lastResult, setLastResult] = useState<{ id: string } | null>(null);
+  const [conversationDone, setConversationDone] = useState(false);
+  const widgetContainerRef = useRef<HTMLDivElement>(null);
 
-  const handleRunTest = async () => {
-    setIsRunning(true);
-    setLastResult(null);
-    try {
-      const result = await api.post<ApiResponse<{ id: string; status: string; durationSeconds: number }>>(
-        '/api/calls/e2e-test',
-        {
-          agentId,
-          status,
-          sentiment,
-          appointmentBooked,
-          durationSeconds,
-        },
-      );
-      if (result.success && result.data) {
-        setLastResult({ id: result.data.id });
-        toast.success(t.agents.e2eTestSuccess);
+  // Load the ElevenLabs widget script
+  useEffect(() => {
+    const existingScript = document.querySelector(`script[src="${WIDGET_SCRIPT_URL}"]`);
+    if (existingScript) {
+      setIsScriptLoaded(true);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = WIDGET_SCRIPT_URL;
+    script.async = true;
+    script.type = 'text/javascript';
+    script.onload = () => setIsScriptLoaded(true);
+    script.onerror = () => setScriptError(true);
+    document.head.appendChild(script);
+  }, []);
+
+  // Mount the custom element when script is loaded
+  useEffect(() => {
+    if (!isScriptLoaded || scriptError || !widgetContainerRef.current) return;
+
+    const el = document.createElement('elevenlabs-convai');
+    el.setAttribute('agent-id', elevenlabsAgentId);
+    widgetContainerRef.current.innerHTML = '';
+    widgetContainerRef.current.appendChild(el);
+
+    // Listen for conversation end event
+    const handleEnd = () => setConversationDone(true);
+    el.addEventListener('elevenlabs-convai:call-ended', handleEnd);
+    el.addEventListener('elevenlabs-convai:conversation-ended', handleEnd);
+
+    return () => {
+      el.removeEventListener('elevenlabs-convai:call-ended', handleEnd);
+      el.removeEventListener('elevenlabs-convai:conversation-ended', handleEnd);
+      if (widgetContainerRef.current) {
+        widgetContainerRef.current.innerHTML = '';
       }
-    } catch {
-      toast.error(t.agents.e2eTestError);
-    } finally {
-      setIsRunning(false);
-    }
-  };
+    };
+  }, [isScriptLoaded, scriptError, elevenlabsAgentId]);
 
-  const handleDeleteLast = async () => {
-    if (!lastResult) return;
-    try {
-      await api.delete<ApiResponse<{ deleted: boolean }>>(`/api/calls/e2e-test/${lastResult.id}`);
-      toast.success(t.agents.e2eTestDeleted);
-      setLastResult(null);
-    } catch {
-      toast.error(t.agents.e2eTestDeleteError);
-    }
-  };
+  // Check microphone permission
+  useEffect(() => {
+    const checkMic = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+        setMicPermission('granted');
+      } catch {
+        setMicPermission('denied');
+      }
+    };
+    checkMic();
+  }, []);
 
   const handleDeleteAll = async () => {
     if (!confirm(t.agents.e2eTestDeleteAllConfirm)) return;
@@ -75,7 +93,6 @@ export function E2ETestModal({ agentId, agentName, onClose }: E2ETestModalProps)
       const result = await api.delete<ApiResponse<{ deletedCount: number }>>('/api/calls/e2e-test');
       if (result.success && result.data) {
         toast.success(`${result.data.deletedCount} ${t.agents.e2eTestDeletedAll}`);
-        setLastResult(null);
       }
     } catch {
       toast.error(t.agents.e2eTestDeleteError);
@@ -86,14 +103,21 @@ export function E2ETestModal({ agentId, agentName, onClose }: E2ETestModalProps)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
-      <div className="bg-surface rounded-2xl shadow-modal w-full max-w-md overflow-hidden">
+      <div className="bg-surface rounded-2xl shadow-modal w-full max-w-lg overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-          <div className="flex items-center gap-2">
-            <FlaskConical className="w-5 h-5 text-amber-600" />
-            <h2 className="text-lg font-semibold text-text-primary">
-              {t.agents.e2eTest}
-            </h2>
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center">
+              <FlaskConical className="w-4 h-4 text-amber-600" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-text-primary">
+                {t.agents.e2eTest}: {agentName}
+              </h2>
+              <p className="text-xs text-text-tertiary">
+                {t.agents.e2eTestDescription}
+              </p>
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -104,97 +128,65 @@ export function E2ETestModal({ agentId, agentName, onClose }: E2ETestModalProps)
         </div>
 
         {/* Body */}
-        <div className="p-6 space-y-5">
-          <p className="text-sm text-text-secondary">
-            {t.agents.e2eTestDescription}
-          </p>
-
-          {/* Agent name */}
-          <div className="text-sm font-medium text-text-primary bg-surface-secondary rounded-lg px-3 py-2">
-            Agent: <span className="text-brand-600">{agentName}</span>
-          </div>
-
-          {/* Options */}
-          <div className="space-y-4">
-            <h3 className="text-sm font-semibold text-text-primary">
-              {t.agents.e2eTestOptions}
-            </h3>
-
-            {/* Status */}
-            <Select
-              label="Status"
-              value={status}
-              onChange={(e) => setStatus(e.target.value as typeof status)}
-              options={[
-                { value: 'completed', label: t.agents.e2eTestStatusCompleted },
-                { value: 'missed', label: t.agents.e2eTestStatusMissed },
-                { value: 'voicemail', label: 'Voicemail' },
-                { value: 'failed', label: 'Failed' },
-              ]}
-            />
-
-            {/* Sentiment */}
-            <div className="space-y-1.5">
-              <label className="block text-sm font-medium text-text-primary">
-                Sentiment ({sentiment}/5)
-              </label>
-              <input
-                type="range"
-                min={1}
-                max={5}
-                value={sentiment}
-                onChange={(e) => setSentiment(Number(e.target.value))}
-                className="w-full accent-brand-600"
-              />
-              <div className="flex justify-between text-xs text-text-tertiary">
-                <span>1 😠</span>
-                <span>3 😐</span>
-                <span>5 😊</span>
+        <div className="p-6">
+          {/* Microphone denied warning */}
+          {micPermission === 'denied' && (
+            <div className="flex items-start gap-3 p-4 mb-4 rounded-lg bg-warning-50 border border-warning-200">
+              <AlertCircle className="w-5 h-5 text-warning-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-warning-700">
+                  {t.testWidget.micUnavailable}
+                </p>
+                <p className="text-xs text-warning-600 mt-1">
+                  {t.testWidget.micUnavailableDescription}
+                </p>
               </div>
             </div>
+          )}
 
-            {/* Duration */}
-            <div className="space-y-1.5">
-              <label className="block text-sm font-medium text-text-primary">
-                Duration ({durationSeconds}s)
-              </label>
-              <input
-                type="range"
-                min={5}
-                max={300}
-                step={5}
-                value={durationSeconds}
-                onChange={(e) => setDurationSeconds(Number(e.target.value))}
-                className="w-full accent-brand-600"
-              />
+          {/* Script loading */}
+          {!isScriptLoaded && !scriptError && (
+            <div className="flex flex-col items-center justify-center py-12 gap-3">
+              <Spinner size="lg" />
+              <p className="text-sm text-text-tertiary">{t.testWidget.loadingWidget}</p>
             </div>
+          )}
 
-            {/* Appointment toggle */}
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={appointmentBooked}
-                onChange={(e) => setAppointmentBooked(e.target.checked)}
-                className="w-4 h-4 rounded border-border text-brand-600 focus:ring-brand-500"
-              />
-              <span className="text-sm text-text-primary">{t.agents.e2eTestWithAppointment}</span>
-            </label>
-          </div>
+          {/* Script error */}
+          {scriptError && (
+            <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
+              <AlertCircle className="w-10 h-10 text-danger-400" />
+              <p className="text-sm text-danger-600 font-medium">
+                {t.testWidget.widgetLoadError}
+              </p>
+            </div>
+          )}
 
-          {/* Success indicator */}
-          {lastResult && (
-            <div className="flex items-center justify-between bg-green-50 border border-green-200 rounded-lg px-3 py-2">
-              <div className="flex items-center gap-2 text-sm text-green-700">
-                <CheckCircle className="w-4 h-4" />
-                {t.agents.e2eTestSuccess}
+          {/* ElevenLabs widget — real conversation */}
+          {isScriptLoaded && !scriptError && (
+            <div className="flex flex-col items-center gap-4">
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-50 text-amber-700 text-xs font-medium">
+                <Mic className="w-3.5 h-3.5" />
+                <span>{t.agents.e2eTestLive}</span>
               </div>
-              <button
-                onClick={handleDeleteLast}
-                className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1 transition-colors"
-                title={t.agents.e2eTestDelete}
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
+
+              {/* The actual ElevenLabs widget */}
+              <div
+                ref={widgetContainerRef}
+                className="w-full min-h-[120px] flex items-center justify-center"
+              />
+
+              <p className="text-xs text-text-tertiary text-center max-w-sm">
+                {t.agents.e2eTestHint}
+              </p>
+            </div>
+          )}
+
+          {/* Conversation completed */}
+          {conversationDone && (
+            <div className="flex items-center gap-2 mt-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+              <CheckCircle className="w-4 h-4 text-green-600" />
+              <span className="text-sm text-green-700">{t.agents.e2eTestSuccess}</span>
             </div>
           )}
         </div>
@@ -212,12 +204,8 @@ export function E2ETestModal({ agentId, agentName, onClose }: E2ETestModalProps)
             {t.agents.e2eTestDeleteAll}
           </Button>
 
-          <Button
-            onClick={handleRunTest}
-            disabled={isRunning}
-            leftIcon={isRunning ? <Spinner className="w-4 h-4" /> : <FlaskConical className="w-4 h-4" />}
-          >
-            {isRunning ? t.agents.e2eTestRunning : t.agents.e2eTestRun}
+          <Button variant="outline" onClick={onClose}>
+            {t.common.close}
           </Button>
         </div>
       </div>

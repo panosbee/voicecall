@@ -356,6 +356,8 @@ export const en: Translations = {
     e2eTestStatusCompleted: 'Completed',
     e2eTestStatusMissed: 'Missed',
     e2eTestWithAppointment: 'With appointment',
+    e2eTestLive: 'Live conversation — auto-recorded',
+    e2eTestHint: 'Talk to the agent. The call will be automatically recorded in Dashboard, Calls & Calendar.',
   },
 
   // ── Assign Number Modal ────────────────────────────────────────
@@ -656,6 +658,19 @@ export const en: Translations = {
     playing: 'Playing',
     loadError: 'Error loading calls',
     appointmentIcon: 'Appointment',
+    appointmentsTag: 'Appointments',
+    incomingCallsTag: 'Incoming Calls',
+    appointmentFor: 'For',
+    appointmentTime: 'Time',
+    appointmentNotes: 'Notes',
+    appointmentStatus: 'Status',
+    appointmentPending: 'Pending',
+    appointmentConfirmed: 'Confirmed',
+    appointmentCancelled: 'Cancelled',
+    appointmentCompleted: 'Completed',
+    appointmentNoShow: 'No Show',
+    noEvents: 'No events',
+    eventsCount: 'events',
   },
 
   // ── Shared Labels ──────────────────────────────────────────────

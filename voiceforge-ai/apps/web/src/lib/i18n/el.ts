@@ -356,6 +356,8 @@ export const el: Translations = {
     e2eTestStatusCompleted: 'Ολοκληρωμένη',
     e2eTestStatusMissed: 'Αναπάντητη',
     e2eTestWithAppointment: 'Με ραντεβού',
+    e2eTestLive: 'Ζωντανή συνομιλία — καταγράφεται αυτόματα',
+    e2eTestHint: 'Μιλήστε με τον agent. Η κλήση θα καταγραφεί αυτόματα στο Dashboard, Κλήσεις & Ημερολόγιο.',
   },
 
   // ── Assign Number Modal ────────────────────────────────────────
@@ -656,6 +658,19 @@ export const el: Translations = {
     playing: 'Αναπαραγωγή',
     loadError: 'Σφάλμα φόρτωσης κλήσεων',
     appointmentIcon: 'Ραντεβού',
+    appointmentsTag: 'Ραντεβού',
+    incomingCallsTag: 'Εισερχόμενες κλήσεις',
+    appointmentFor: 'Για',
+    appointmentTime: 'Ώρα',
+    appointmentNotes: 'Σημειώσεις',
+    appointmentStatus: 'Κατάσταση',
+    appointmentPending: 'Εκκρεμής',
+    appointmentConfirmed: 'Επιβεβαιωμένο',
+    appointmentCancelled: 'Ακυρωμένο',
+    appointmentCompleted: 'Ολοκληρωμένο',
+    appointmentNoShow: 'Μη εμφάνιση',
+    noEvents: 'Κανένα γεγονός',
+    eventsCount: 'γεγονότα',
   },
 
   // ── Shared Labels ──────────────────────────────────────────────

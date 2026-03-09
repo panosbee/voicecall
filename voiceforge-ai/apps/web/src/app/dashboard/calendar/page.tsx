@@ -52,6 +52,20 @@ interface CalendarCall {
   endedAt: string | null;
 }
 
+interface CalendarAppointment {
+  id: string;
+  callerName: string;
+  callerPhone: string;
+  agentName: string;
+  serviceType: string | null;
+  scheduledAt: string;
+  durationMinutes: number;
+  status: string;
+  notes: string | null;
+  callId: string | null;
+  callSummary: string | null;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Main Page
 // ═══════════════════════════════════════════════════════════════════
@@ -65,6 +79,7 @@ export default function CalendarPage() {
   const [month, setMonth] = useState(now.getMonth() + 1); // 1-indexed
   const [selectedDay, setSelectedDay] = useState<number | null>(now.getDate());
   const [calls, setCalls] = useState<CalendarCall[]>([]);
+  const [appointments, setAppointments] = useState<CalendarAppointment[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Audio player state
@@ -77,11 +92,19 @@ export default function CalendarPage() {
   const loadCalls = useCallback(async () => {
     setIsLoading(true);
     try {
-      const result = await api.get<ApiResponse<CalendarCall[]>>('/api/calls/calendar/month', {
-        params: { year, month },
-      });
-      if (result.success && Array.isArray(result.data)) {
-        setCalls(result.data);
+      const [callsResult, appointmentsResult] = await Promise.all([
+        api.get<ApiResponse<CalendarCall[]>>('/api/calls/calendar/month', {
+          params: { year, month },
+        }),
+        api.get<ApiResponse<CalendarAppointment[]>>('/api/calls/calendar/appointments', {
+          params: { year, month },
+        }),
+      ]);
+      if (callsResult.success && Array.isArray(callsResult.data)) {
+        setCalls(callsResult.data);
+      }
+      if (appointmentsResult.success && Array.isArray(appointmentsResult.data)) {
+        setAppointments(appointmentsResult.data);
       }
     } catch {
       toast.error(t.calendar.loadError);
@@ -155,7 +178,22 @@ export default function CalendarPage() {
     return map;
   }, [calls]);
 
+  const appointmentsByDay = useMemo(() => {
+    const map = new Map<number, CalendarAppointment[]>();
+    for (const apt of appointments) {
+      const d = new Date(apt.scheduledAt);
+      const day = d.getDate();
+      if (!map.has(day)) map.set(day, []);
+      map.get(day)!.push(apt);
+    }
+    for (const [, dayApts] of map) {
+      dayApts.sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+    }
+    return map;
+  }, [appointments]);
+
   const selectedDayCalls = selectedDay ? callsByDay.get(selectedDay) ?? [] : [];
+  const selectedDayAppointments = selectedDay ? appointmentsByDay.get(selectedDay) ?? [] : [];
 
   // ── Audio player ─────────────────────────────────────────────
 
@@ -312,10 +350,11 @@ export default function CalendarPage() {
                 {Array.from({ length: daysInMonth }).map((_, i) => {
                   const day = i + 1;
                   const dayCalls = callsByDay.get(day) ?? [];
+                  const dayApts = appointmentsByDay.get(day) ?? [];
                   const isSelected = selectedDay === day;
                   const completedCount = dayCalls.filter((c) => c.status === 'completed').length;
                   const missedCount = dayCalls.filter((c) => c.status === 'missed').length;
-                  const hasAppointment = dayCalls.some((c) => c.appointmentBooked);
+                  const hasAppointment = dayApts.length > 0 || dayCalls.some((c) => c.appointmentBooked);
 
                   return (
                     <button
@@ -421,12 +460,12 @@ export default function CalendarPage() {
               </h3>
               {selectedDay && (
                 <p className="text-xs text-text-tertiary mt-0.5">
-                  {selectedDayCalls.length} {t.calendar.callsCount}
+                  {selectedDayCalls.length + selectedDayAppointments.length} {t.calendar.eventsCount}
                 </p>
               )}
             </div>
 
-            {/* Calls timeline */}
+            {/* Events timeline */}
             <div className="max-h-[calc(100vh-280px)] overflow-y-auto">
               {!selectedDay ? (
                 <EmptyState
@@ -434,12 +473,86 @@ export default function CalendarPage() {
                   title={t.calendar.title}
                   description={t.calendar.description}
                 />
-              ) : selectedDayCalls.length === 0 ? (
+              ) : selectedDayCalls.length === 0 && selectedDayAppointments.length === 0 ? (
                 <div className="py-12 text-center">
                   <Phone className="w-8 h-8 text-text-tertiary mx-auto mb-2" />
-                  <p className="text-sm text-text-tertiary">{t.calendar.noCalls}</p>
+                  <p className="text-sm text-text-tertiary">{t.calendar.noEvents}</p>
                 </div>
               ) : (
+                <div>
+                  {/* ── Appointments Section ─────────────────── */}
+                  {selectedDayAppointments.length > 0 && (
+                    <div>
+                      <div className="px-5 py-2 bg-amber-50 border-b border-amber-200">
+                        <div className="flex items-center gap-1.5">
+                          <CalendarCheck className="w-3.5 h-3.5 text-amber-600" />
+                          <span className="text-xs font-semibold text-amber-700">
+                            {t.calendar.appointmentsTag} ({selectedDayAppointments.length})
+                          </span>
+                        </div>
+                      </div>
+                      <div className="divide-y divide-border">
+                        {selectedDayAppointments.map((apt) => {
+                          const aptStatusLabel = {
+                            pending: t.calendar.appointmentPending,
+                            confirmed: t.calendar.appointmentConfirmed,
+                            cancelled: t.calendar.appointmentCancelled,
+                            completed: t.calendar.appointmentCompleted,
+                            no_show: t.calendar.appointmentNoShow,
+                          }[apt.status] ?? apt.status;
+
+                          return (
+                            <div key={apt.id} className="px-5 py-3">
+                              <div className="flex items-center gap-3">
+                                <div className="text-right shrink-0 w-14">
+                                  <span className="text-sm font-mono font-semibold text-text-primary">
+                                    {formatTime(apt.scheduledAt)}
+                                  </span>
+                                </div>
+                                <div className="relative">
+                                  <CalendarCheck className="w-4 h-4 text-amber-500" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-medium text-text-primary truncate">
+                                      {apt.callerName}
+                                    </span>
+                                    <Badge variant={apt.status === 'confirmed' ? 'success' : apt.status === 'cancelled' ? 'danger' : 'default'}>
+                                      {aptStatusLabel}
+                                    </Badge>
+                                  </div>
+                                  <div className="flex items-center gap-2 mt-0.5">
+                                    <span className="text-[11px] text-text-tertiary">{apt.agentName}</span>
+                                    <span className="text-text-tertiary text-[11px]">•</span>
+                                    <span className="text-[11px] text-text-tertiary font-mono">
+                                      {formatPhoneNumber(apt.callerPhone)}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                              {apt.notes && (
+                                <p className="text-[11px] text-text-tertiary mt-1.5 ml-[72px] line-clamp-2">
+                                  {apt.notes}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Incoming Calls Section ───────────────── */}
+                  {selectedDayCalls.length > 0 && (
+                    <div>
+                      <div className="px-5 py-2 bg-brand-50 border-b border-brand-200">
+                        <div className="flex items-center gap-1.5">
+                          <PhoneIncoming className="w-3.5 h-3.5 text-brand-600" />
+                          <span className="text-xs font-semibold text-brand-700">
+                            {t.calendar.incomingCallsTag} ({selectedDayCalls.length})
+                          </span>
+                        </div>
+                      </div>
                 <div className="divide-y divide-border">
                   {selectedDayCalls.map((call) => {
                     const isExpanded = expandedCallId === call.id;
@@ -665,15 +778,18 @@ export default function CalendarPage() {
                     );
                   })}
                 </div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
 
             {/* Monthly summary footer */}
-            {calls.length > 0 && (
+            {(calls.length > 0 || appointments.length > 0) && (
               <div className="px-5 py-3 border-t border-border bg-surface-secondary/50">
                 <div className="flex items-center justify-between text-xs text-text-tertiary">
                   <span>
-                    {calls.length} {t.calendar.callsCount}
+                    {calls.length + appointments.length} {t.calendar.eventsCount}
                   </span>
                   <div className="flex items-center gap-3">
                     <span className="flex items-center gap-1">
@@ -685,8 +801,8 @@ export default function CalendarPage() {
                       {calls.filter((c) => c.status === 'missed').length}
                     </span>
                     <span className="flex items-center gap-1">
-                      <CalendarCheck className="w-3 h-3 text-success-500" />
-                      {calls.filter((c) => c.appointmentBooked).length}
+                      <CalendarCheck className="w-3 h-3 text-amber-500" />
+                      {appointments.length}
                     </span>
                   </div>
                 </div>

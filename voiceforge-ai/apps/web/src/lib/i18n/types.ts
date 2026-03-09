@@ -296,6 +296,8 @@ export interface Translations {
     e2eTestStatusCompleted: string;
     e2eTestStatusMissed: string;
     e2eTestWithAppointment: string;
+    e2eTestLive: string;
+    e2eTestHint: string;
   };
 
   // ── Assign Number Modal ────────────────────────────────────────
@@ -599,6 +601,20 @@ export interface Translations {
     playing: string;
     loadError: string;
     appointmentIcon: string;
+    // Appointment entries in calendar
+    appointmentsTag: string;
+    incomingCallsTag: string;
+    appointmentFor: string;
+    appointmentTime: string;
+    appointmentNotes: string;
+    appointmentStatus: string;
+    appointmentPending: string;
+    appointmentConfirmed: string;
+    appointmentCancelled: string;
+    appointmentCompleted: string;
+    appointmentNoShow: string;
+    noEvents: string;
+    eventsCount: string;
   };
   // ── Shared Labels (industries, plans, time) ────────────────────
   shared: {
