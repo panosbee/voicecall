@@ -277,6 +277,25 @@ export interface Translations {
     embedSaveConfig: string;
     embedConfigSaved: string;
     embedConfigError: string;
+    // E2E Test
+    e2eTest: string;
+    e2eTestDescription: string;
+    e2eTestRun: string;
+    e2eTestRunning: string;
+    e2eTestSuccess: string;
+    e2eTestError: string;
+    e2eTestDelete: string;
+    e2eTestDeleteAll: string;
+    e2eTestDeleteConfirm: string;
+    e2eTestDeleteAllConfirm: string;
+    e2eTestDeleted: string;
+    e2eTestDeletedAll: string;
+    e2eTestDeleteError: string;
+    e2eTestBadge: string;
+    e2eTestOptions: string;
+    e2eTestStatusCompleted: string;
+    e2eTestStatusMissed: string;
+    e2eTestWithAppointment: string;
   };
 
   // ── Assign Number Modal ────────────────────────────────────────

@@ -10,13 +10,14 @@ import { Button, Card, Badge, Spinner, EmptyState, PageHeader } from '@/componen
 import { api } from '@/lib/api-client';
 import { formatPhoneNumber, getIndustryLabels } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
-import { Bot, Plus, Phone, Trash2, Pencil, Cpu, MessageCircle, PhoneCall, PhoneForwarded } from 'lucide-react';
+import { Bot, Plus, Phone, Trash2, Pencil, Cpu, MessageCircle, PhoneCall, PhoneForwarded, FlaskConical } from 'lucide-react';
 import { toast } from 'sonner';
 import { GREEK_VOICES, AI_PROVIDER } from '@voiceforge/shared';
 import type { AgentSummary, ApiResponse } from '@voiceforge/shared';
 import { AgentEditModal } from './agent-edit-modal';
 import { AssignNumberModal } from './assign-number-modal';
 import { AgentTestWidget } from '@/components/agent-test-widget';
+import { E2ETestModal } from './e2e-test-modal';
 
 export default function AgentsPage() {
   const { t } = useI18n();
@@ -28,6 +29,7 @@ export default function AgentsPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [testingAgent, setTestingAgent] = useState<{ id: string; name: string } | null>(null);
   const [assigningNumber, setAssigningNumber] = useState<{ id: string; name: string } | null>(null);
+  const [e2eTestAgent, setE2eTestAgent] = useState<{ id: string; name: string } | null>(null);
 
   const loadAgents = useCallback(async () => {
     try {
@@ -207,6 +209,20 @@ export default function AgentsPage() {
                     <Button
                       variant="ghost"
                       size="sm"
+                      onClick={() =>
+                        setE2eTestAgent({
+                          id: agent.id,
+                          name: agent.name,
+                        })
+                      }
+                      className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+                      leftIcon={<FlaskConical className="w-3.5 h-3.5" />}
+                    >
+                      {t.agents.e2eTest}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => setEditingAgent(agent.id)}
                       leftIcon={<Pencil className="w-3.5 h-3.5" />}
                     >
@@ -264,6 +280,15 @@ export default function AgentsPage() {
             setAssigningNumber(null);
             loadAgents();
           }}
+        />
+      )}
+
+      {/* E2E Test Modal */}
+      {e2eTestAgent && (
+        <E2ETestModal
+          agentId={e2eTestAgent.id}
+          agentName={e2eTestAgent.name}
+          onClose={() => setE2eTestAgent(null)}
         />
       )}
     </div>

@@ -8,7 +8,7 @@ import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { eq, and, gte, lte, desc, sql, count } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { customers, calls } from '../db/schema/index.js';
+import { customers, calls, agents } from '../db/schema/index.js';
 import { authMiddleware, type AuthUser } from '../middleware/auth.js';
 import { createLogger } from '../config/logger.js';
 import { getMonthRangeInTimezone } from '../services/timezone.js';
@@ -233,4 +233,183 @@ callRoutes.get('/calendar/month', zValidator('query', calendarSchema), async (c)
     })),
     meta: { year, month, total: callRecords.length },
   });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// POST /calls/e2e-test — Create a simulated test call
+// Inserts a realistic call record without needing Telnyx/ElevenLabs
+// Marked with metadata.isE2ETest = true for easy cleanup
+// ═══════════════════════════════════════════════════════════════════
+
+const e2eTestSchema = z.object({
+  agentId: z.string().uuid(),
+  durationSeconds: z.number().int().min(5).max(600).optional().default(45),
+  status: z.enum(['completed', 'missed', 'voicemail', 'failed']).optional().default('completed'),
+  appointmentBooked: z.boolean().optional().default(false),
+  sentiment: z.number().int().min(1).max(5).optional().default(4),
+  callerNumber: z.string().optional().default('+306900000001'),
+});
+
+callRoutes.post('/e2e-test', zValidator('json', e2eTestSchema), async (c) => {
+  const user = c.get('user');
+  const body = c.req.valid('json');
+
+  const customer = await db.query.customers.findFirst({
+    where: eq(customers.userId, user.sub),
+  });
+
+  if (!customer) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Customer not found' } }, 404);
+  }
+
+  // Verify the agent belongs to this customer
+  const agent = await db.query.agents.findFirst({
+    where: and(eq(agents.id, body.agentId), eq(agents.customerId, customer.id)),
+  });
+
+  if (!agent) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Agent not found' } }, 404);
+  }
+
+  // Build realistic call data
+  const now = new Date();
+  const startedAt = new Date(now.getTime() - body.durationSeconds * 1000);
+  const endedAt = now;
+
+  const agentDisplayName = agent.name || 'AI Assistant';
+  const transcript = [
+    `[Agent]: Γεια σας, ${agent.greeting || 'πώς μπορώ να σας βοηθήσω;'}`,
+    `[Customer]: Γεια σας, θα ήθελα κάποιες πληροφορίες.`,
+    `[Agent]: Φυσικά! Πώς μπορώ να σας εξυπηρετήσω;`,
+    `[Customer]: Θέλω να κλείσω ένα ραντεβού.`,
+    `[Agent]: Με χαρά! Ποια ημερομηνία σας βολεύει;`,
+    `[Customer]: Αύριο το πρωί αν γίνεται.`,
+    `[Agent]: Τέλεια, σας έκλεισα ραντεβού. Υπάρχει κάτι άλλο;`,
+    `[Customer]: Όχι, ευχαριστώ πολύ!`,
+    `[Agent]: Παρακαλώ! Καλή σας μέρα.`,
+  ].join('\n');
+
+  const summary = body.status === 'completed'
+    ? `Ο πελάτης κάλεσε τον ${agentDisplayName} και ζήτησε πληροφορίες. ${body.appointmentBooked ? 'Κλείστηκε ραντεβού για αύριο το πρωί.' : 'Η συνομιλία ολοκληρώθηκε επιτυχώς.'}`
+    : body.status === 'missed'
+      ? 'Αναπάντητη κλήση — ο πελάτης δεν απάντησε.'
+      : 'Η κλήση δεν ολοκληρώθηκε.';
+
+  const intentCategory = body.appointmentBooked ? 'appointment_booking' : 'inquiry';
+
+  const [testCall] = await db
+    .insert(calls)
+    .values({
+      customerId: customer.id,
+      agentId: agent.id,
+      telnyxConversationId: `e2e_test_${crypto.randomUUID()}`,
+      callerNumber: body.callerNumber,
+      agentNumber: agent.phoneNumber || '+302100000000',
+      direction: 'inbound',
+      status: body.status,
+      startedAt,
+      endedAt: body.status === 'completed' ? endedAt : null,
+      durationSeconds: body.status === 'completed' ? body.durationSeconds : null,
+      transcript: body.status === 'completed' ? transcript : null,
+      summary,
+      sentiment: body.status === 'completed' ? body.sentiment : null,
+      intentCategory,
+      appointmentBooked: body.appointmentBooked,
+      metadata: { isE2ETest: true, createdBy: 'e2e-test-button' },
+    })
+    .returning();
+
+  if (!testCall) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'INSERT_FAILED', message: 'Failed to create test call' } }, 500);
+  }
+
+  log.info({ callId: testCall.id, agentId: agent.id }, '🧪 E2E test call created');
+
+  return c.json<ApiResponse>({
+    success: true,
+    data: {
+      id: testCall.id,
+      callerNumber: testCall.callerNumber,
+      agentNumber: testCall.agentNumber,
+      agentName: agent.name,
+      direction: testCall.direction,
+      status: testCall.status,
+      durationSeconds: testCall.durationSeconds,
+      summary: testCall.summary,
+      sentiment: testCall.sentiment,
+      appointmentBooked: testCall.appointmentBooked,
+      startedAt: testCall.startedAt.toISOString(),
+      endedAt: testCall.endedAt?.toISOString() ?? null,
+      isE2ETest: true,
+    },
+  }, 201);
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// DELETE /calls/e2e-test/:id — Delete a test call
+// Only allows deletion of calls with metadata.isE2ETest = true
+// ═══════════════════════════════════════════════════════════════════
+
+callRoutes.delete('/e2e-test/:id', async (c) => {
+  const user = c.get('user');
+  const callId = c.req.param('id');
+
+  const customer = await db.query.customers.findFirst({
+    where: eq(customers.userId, user.sub),
+  });
+
+  if (!customer) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Customer not found' } }, 404);
+  }
+
+  const callRecord = await db.query.calls.findFirst({
+    where: and(eq(calls.id, callId), eq(calls.customerId, customer.id)),
+  });
+
+  if (!callRecord) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Call not found' } }, 404);
+  }
+
+  // Safety: only delete test calls
+  const meta = callRecord.metadata as Record<string, unknown> | null;
+  if (!meta || meta.isE2ETest !== true) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'FORBIDDEN', message: 'Only test calls can be deleted' } }, 403);
+  }
+
+  await db.delete(calls).where(eq(calls.id, callId));
+
+  log.info({ callId }, '🗑️ E2E test call deleted');
+
+  return c.json<ApiResponse>({ success: true, data: { deleted: true } });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// DELETE /calls/e2e-test — Delete ALL test calls for current customer
+// Bulk cleanup of all E2E test data
+// ═══════════════════════════════════════════════════════════════════
+
+callRoutes.delete('/e2e-test', async (c) => {
+  const user = c.get('user');
+
+  const customer = await db.query.customers.findFirst({
+    where: eq(customers.userId, user.sub),
+  });
+
+  if (!customer) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Customer not found' } }, 404);
+  }
+
+  const result = await db
+    .delete(calls)
+    .where(
+      and(
+        eq(calls.customerId, customer.id),
+        sql`${calls.metadata}->>'isE2ETest' = 'true'`,
+      ),
+    )
+    .returning({ id: calls.id });
+
+  log.info({ count: result.length, customerId: customer.id }, '🗑️ All E2E test calls deleted');
+
+  return c.json<ApiResponse>({ success: true, data: { deletedCount: result.length } });
 });
