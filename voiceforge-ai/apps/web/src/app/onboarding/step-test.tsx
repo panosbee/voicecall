@@ -64,21 +64,27 @@ export function StepTest({ data, updateData, onNext, onBack }: StepTestProps) {
     checkMic();
   }, []);
 
-  // Mount/remount the widget when testAgentId changes
+  // Mount/remount the widget when testAgentId changes.
+  // Small delay avoids "signal is aborted" error from React Strict Mode double-mount.
   useEffect(() => {
     if (!data.testAgentId || !isScriptLoaded || !widgetContainerRef.current) return;
     if (data.testAgentId.startsWith('dev_')) return;
 
+    let cancelled = false;
     const container = widgetContainerRef.current;
-    container.innerHTML = '';
 
-    const el = document.createElement('elevenlabs-convai');
-    el.setAttribute('agent-id', data.testAgentId);
-    container.appendChild(el);
-
-    setHasTestedOnce(true);
+    const timer = setTimeout(() => {
+      if (cancelled || !container) return;
+      container.innerHTML = '';
+      const el = document.createElement('elevenlabs-convai');
+      el.setAttribute('agent-id', data.testAgentId);
+      container.appendChild(el);
+      setHasTestedOnce(true);
+    }, 50);
 
     return () => {
+      cancelled = true;
+      clearTimeout(timer);
       container.innerHTML = '';
     };
   }, [data.testAgentId, isScriptLoaded]);

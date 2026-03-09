@@ -51,16 +51,24 @@ export function AgentTestWidget({ agentId, agentName, onClose }: AgentTestWidget
     document.head.appendChild(script);
   }, []);
 
-  // Mount the custom element imperatively when script is loaded
+  // Mount the custom element imperatively when script is loaded.
+  // Small delay avoids "signal is aborted" error caused by React Strict Mode
+  // double-mount cycle aborting the first fetch before the widget initializes.
   useEffect(() => {
     if (!isScriptLoaded || scriptError || !widgetContainerRef.current) return;
 
-    const el = document.createElement('elevenlabs-convai');
-    el.setAttribute('agent-id', agentId);
-    widgetContainerRef.current.innerHTML = '';
-    widgetContainerRef.current.appendChild(el);
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled || !widgetContainerRef.current) return;
+      const el = document.createElement('elevenlabs-convai');
+      el.setAttribute('agent-id', agentId);
+      widgetContainerRef.current.innerHTML = '';
+      widgetContainerRef.current.appendChild(el);
+    }, 50);
 
     return () => {
+      cancelled = true;
+      clearTimeout(timer);
       if (widgetContainerRef.current) {
         widgetContainerRef.current.innerHTML = '';
       }
