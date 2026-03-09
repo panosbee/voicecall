@@ -9,11 +9,12 @@ import { z } from 'zod';
 import { eq, and, inArray } from 'drizzle-orm';
 
 import { db } from '../db/connection.js';
-import { agentFlows, agents, knowledgeBaseDocuments } from '../db/schema/index.js';
+import { agentFlows, agents, knowledgeBaseDocuments, customers } from '../db/schema/index.js';
 import { authMiddleware, type AuthUser } from '../middleware/auth.js';
 import { createLogger } from '../config/logger.js';
 import * as elevenlabsService from '../services/elevenlabs.js';
 import { env } from '../config/env.js';
+import { buildEnhancedInstructions } from '../services/prompt-builder.js';
 
 import type { FlowRoutingRules, RoutingRule, FlowAgentCard, FlowWithAgents, AgentFlow } from '@voiceforge/shared';
 
@@ -26,7 +27,6 @@ function isDevBypass(): boolean {
 }
 
 async function getCustomerByUserId(userId: string) {
-  const { customers } = await import('../db/schema/index.js');
   return db.query.customers.findFirst({ where: eq(customers.userId, userId) });
 }
 
@@ -313,12 +313,24 @@ flowRoutes.post('/:id/add-agent', zValidator('json', addAgentSchema), async (c) 
     }, 400);
   }
 
-  // Create agent on ElevenLabs
+  // Create agent on ElevenLabs with enhanced instructions (same as naive mode)
   let elevenlabsAgentId: string | null = null;
   if (!isDevBypass()) {
+    const supportedLangs = [body.language || 'el'];
+    const customerTz = customer.timezone || 'Europe/Athens';
+    const customerLocale = customer.locale?.startsWith('en') ? 'en' : 'el';
+
+    const enhancedInstructions = buildEnhancedInstructions({
+      rawInstructions: body.instructions,
+      language: body.language || 'el',
+      supportedLanguages: supportedLangs,
+      customerTimezone: customerTz,
+      customerLocale,
+    });
+
     const result = await elevenlabsService.createAgent({
       name: `${body.name} - ${customer.businessName}`,
-      instructions: body.instructions,
+      instructions: enhancedInstructions,
       greeting: body.greeting,
       voiceId: body.voiceId,
       language: body.language,
@@ -490,9 +502,32 @@ flowRoutes.post('/:id/deploy', async (c) => {
   }
 
   // For each agent with routing rules, update ElevenLabs:
-  // 1. Add transfer_to_agent tool targets
-  // 2. Inject routing prompt into instructions
+  // 1. Build enhanced instructions (language, safety, timezone, memory)
+  // 2. Append routing prompt for agent transfers
+  // 3. Attach KB docs
+  // 4. Add transfer_to_agent tool targets
   const deployResults: Array<{ agentId: string; name: string; status: string }> = [];
+
+  const customerTz = customer.timezone || 'Europe/Athens';
+  const customerLocale = customer.locale?.startsWith('en') ? 'en' : 'el';
+
+  // Fetch KB docs for all agents in this flow
+  const allKbDocs = agentOrder.length > 0
+    ? await db.query.knowledgeBaseDocuments.findMany({
+        where: and(
+          inArray(knowledgeBaseDocuments.agentId, agentOrder),
+          eq(knowledgeBaseDocuments.status, 'ready'),
+        ),
+      })
+    : [];
+  const kbDocsByAgent: Record<string, Array<{ id: string; name: string }>> = {};
+  for (const doc of allKbDocs) {
+    if (doc.agentId && doc.elevenlabsDocId) {
+      const arr = kbDocsByAgent[doc.agentId] ?? [];
+      arr.push({ id: doc.elevenlabsDocId, name: doc.name || doc.elevenlabsDocId });
+      kbDocsByAgent[doc.agentId] = arr;
+    }
+  }
 
   for (const agentId of agentOrder) {
     const agent = agentMap.get(agentId);
@@ -516,14 +551,27 @@ flowRoutes.post('/:id/deploy', async (c) => {
     // Generate routing prompt suffix
     const routingPrompt = generateRoutingPrompt(rules, agentNames);
 
-    // Update ElevenLabs agent — instructions get routing suffix appended
+    // Build enhanced instructions (same enrichments as naive mode + routing)
+    const supportedLangs: string[] = (agent.supportedLanguages as string[]) ?? [agent.language as string || 'el'];
+    const enhancedInstructions = buildEnhancedInstructions({
+      rawInstructions: agent.instructions + routingPrompt,
+      language: (agent.language as string) || supportedLangs[0] || 'el',
+      supportedLanguages: supportedLangs,
+      customerTimezone: customerTz,
+      customerLocale,
+    });
+
+    const agentKbDocs = kbDocsByAgent[agentId] || [];
+
+    // Update ElevenLabs agent with full enhanced instructions + KB docs
     try {
       await elevenlabsService.updateAgent(agent.elevenlabsAgentId, {
-        instructions: agent.instructions + routingPrompt,
+        instructions: enhancedInstructions,
         transferTargets,
+        ...(agentKbDocs.length > 0 ? { knowledgeBaseDocs: agentKbDocs } : {}),
       });
       deployResults.push({ agentId, name: agent.name, status: 'deployed' });
-      log.info({ agentId, name: agent.name, rulesCount: rules.length }, 'Agent route rules deployed');
+      log.info({ agentId, name: agent.name, rulesCount: rules.length, kbDocs: agentKbDocs.length }, 'Agent route rules deployed');
     } catch (error) {
       log.error({ error, agentId }, 'Failed to deploy routing rules');
       deployResults.push({ agentId, name: agent.name, status: 'error' });
