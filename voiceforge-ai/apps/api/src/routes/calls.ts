@@ -492,36 +492,72 @@ callRoutes.post('/record-conversation', zValidator('json', recordConversationSch
   }
 
   try {
-    // Fetch recent conversations for this agent from ElevenLabs
-    const conversations = await elevenlabsService.getConversations(elevenlabsAgentId);
-    if (!conversations || conversations.length === 0) {
-      return c.json<ApiResponse>({ success: true, data: null });
+    // ── Step 1: Find the newest unrecorded conversation ────────────
+    // Retry up to 3 times — new conversations may take seconds to appear in ElevenLabs API
+    let conversationId: string | null = null;
+
+    for (let findAttempt = 0; findAttempt < 3; findAttempt++) {
+      const conversations = await elevenlabsService.getConversations(elevenlabsAgentId);
+
+      if (conversations && conversations.length > 0) {
+        for (const conv of conversations) {
+          const cid = ((conv as Record<string, any>).conversationId ?? (conv as Record<string, any>).conversation_id) as string | undefined;
+          if (!cid) continue;
+
+          const existing = await db.query.webhookEvents.findFirst({
+            where: eq(webhookEvents.eventId, cid),
+          });
+          if (!existing) {
+            conversationId = cid;
+            break;
+          }
+        }
+      }
+
+      if (conversationId) break;
+
+      if (findAttempt < 2) {
+        log.info({ attempt: findAttempt + 1, elevenlabsAgentId }, 'No unrecorded conversation found yet — retrying...');
+        await new Promise(r => setTimeout(r, 4000));
+      }
     }
 
-    // Pick the most recent conversation
-    // SDK returns camelCase (conversationId) but REST API uses snake_case (conversation_id)
-    const latest = conversations[0] as Record<string, any>;
-    const conversationId = (latest.conversationId ?? latest.conversation_id) as string;
     if (!conversationId) {
-      log.warn({ latestKeys: Object.keys(latest) }, 'No conversationId found in latest conversation');
-      return c.json<ApiResponse>({ success: true, data: null });
+      log.info({ elevenlabsAgentId }, 'No unrecorded conversation found after retries');
+      return c.json<ApiResponse>({ success: true, data: { status: 'no_new_conversation' } });
     }
 
-    // Dedup: skip if already recorded
-    const existing = await db.query.webhookEvents.findFirst({
-      where: eq(webhookEvents.eventId, conversationId),
-    });
-    if (existing) {
-      log.info({ conversationId }, 'Conversation already recorded — skipping');
-      return c.json<ApiResponse>({ success: true, data: { alreadyRecorded: true } });
-    }
+    // ── Step 2: Fetch full conversation — poll until AI analysis is ready ──
+    // ElevenLabs processes conversations asynchronously: the transcript
+    // appears first, but the summary, data collection, and evaluation
+    // criteria take several more seconds. We poll up to 5 times (total ~15s).
+    let full: Record<string, any> = {};
+    let transcript: Array<{ role: string; message?: string; time_in_call_secs?: number; timeInCallSecs?: number }> = [];
+    let analysis: Record<string, any> | undefined;
+    let metadata: Record<string, any> | undefined;
 
-    // Fetch full conversation details from ElevenLabs
-    const full = await elevenlabsService.getConversation(conversationId) as Record<string, any>;
-    const transcript: Array<{ role: string; message?: string; time_in_call_secs?: number; timeInCallSecs?: number }> =
-      full.transcript ?? [];
-    const analysis = full.analysis as Record<string, any> | undefined;
-    const metadata = full.metadata as Record<string, any> | undefined;
+    for (let analysisAttempt = 0; analysisAttempt < 5; analysisAttempt++) {
+      full = await elevenlabsService.getConversation(conversationId) as Record<string, any>;
+      transcript = full.transcript ?? [];
+      analysis = full.analysis as Record<string, any> | undefined;
+      metadata = full.metadata as Record<string, any> | undefined;
+
+      const hasTranscript = transcript.length > 0 && transcript.some((m: any) => m.message);
+      const hasSummary = !!(analysis?.transcriptSummary ?? analysis?.transcript_summary);
+      const hasDataCollection = Object.keys(analysis?.dataCollectionResults ?? analysis?.data_collection_results ?? {}).length > 0;
+
+      if (hasTranscript && (hasSummary || hasDataCollection)) {
+        log.info({ conversationId, attempt: analysisAttempt + 1, hasSummary, hasDataCollection }, '✅ Conversation analysis ready');
+        break;
+      }
+
+      if (analysisAttempt < 4) {
+        log.info({ conversationId, attempt: analysisAttempt + 1, hasTranscript, hasSummary, hasDataCollection }, '⏳ Waiting for AI analysis...');
+        await new Promise(r => setTimeout(r, 3000));
+      } else {
+        log.warn({ conversationId, hasTranscript, hasSummary, hasDataCollection }, '⚠️ AI analysis not available after 5 attempts — recording with available data');
+      }
+    }
 
     // Build formatted transcript text
     const agentDisplayName = agent.name || 'AI Assistant';
@@ -705,6 +741,7 @@ callRoutes.post('/record-conversation', zValidator('json', recordConversationSch
     return c.json<ApiResponse>({
       success: true,
       data: {
+        status: 'recorded',
         id: callRecord.id,
         conversationId,
         durationSeconds,

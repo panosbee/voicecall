@@ -98,7 +98,11 @@ export function AgentTestWidget({ agentId, agentName, onClose }: AgentTestWidget
     checkMic();
   }, []);
 
-  // Record the conversation when widget closes
+  // Record the conversation when widget closes.
+  // The backend handles internal polling (up to ~27s) waiting for ElevenLabs
+  // to finalize the AI analysis (summary, data collection, evaluation).
+  // Frontend waits 5s for the conversation to appear, then makes one call.
+  // One retry if the first attempt returns no conversation.
   const handleClose = useCallback(async () => {
     if (!widgetMountedRef.current) {
       onClose();
@@ -107,28 +111,52 @@ export function AgentTestWidget({ agentId, agentName, onClose }: AgentTestWidget
 
     setIsRecording(true);
 
-    // Small delay to let ElevenLabs finalize the conversation
-    await new Promise((r) => setTimeout(r, 3000));
+    // Initial delay: let ElevenLabs register the conversation
+    await new Promise((r) => setTimeout(r, 5000));
 
-    try {
-      const result = await api.post<ApiResponse<{ id?: string; summary?: string; appointmentBooked?: boolean; alreadyRecorded?: boolean } | null>>(
-        '/api/calls/record-conversation',
-        { elevenlabsAgentId: agentId },
-      );
+    let recorded = false;
 
-      if (result.success && result.data && !('alreadyRecorded' in result.data)) {
-        toast.success(t.testWidget.conversationRecorded);
-        if (result.data.appointmentBooked) {
-          toast.success(t.testWidget.appointmentDetected);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const result = await api.post<ApiResponse<{ status?: string; id?: string; summary?: string; appointmentBooked?: boolean } | null>>(
+          '/api/calls/record-conversation',
+          { elevenlabsAgentId: agentId },
+        );
+
+        if (result.success && result.data) {
+          if (result.data.status === 'recorded') {
+            toast.success(t.testWidget.conversationRecorded);
+            if (result.data.appointmentBooked) {
+              toast.success(t.testWidget.appointmentDetected);
+            }
+            recorded = true;
+            break;
+          }
+          if (result.data.status === 'no_new_conversation' && attempt === 0) {
+            // Conversation not in ElevenLabs yet — wait more and retry
+            console.info('[AgentTestWidget] No conversation found yet, retrying after delay...');
+            await new Promise((r) => setTimeout(r, 6000));
+            continue;
+          }
+        }
+
+        // Any other response on last attempt — give up
+        break;
+      } catch (err) {
+        console.warn(`[AgentTestWidget] Record attempt ${attempt + 1} failed:`, err);
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 6000));
+          continue;
         }
       }
-    } catch (err) {
-      // Non-critical — don't block user from closing
-      console.warn('Failed to record conversation:', err);
-    } finally {
-      setIsRecording(false);
-      onClose();
     }
+
+    if (!recorded) {
+      toast.error(t.testWidget.widgetLoadError);
+    }
+
+    setIsRecording(false);
+    onClose();
   }, [agentId, onClose, t]);
 
   return (
