@@ -10,14 +10,13 @@ import { Button, Card, Badge, Spinner, EmptyState, PageHeader } from '@/componen
 import { api } from '@/lib/api-client';
 import { formatPhoneNumber, getIndustryLabels } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
-import { Bot, Plus, Phone, Trash2, Pencil, Cpu, MessageCircle, PhoneCall, PhoneForwarded, FlaskConical } from 'lucide-react';
+import { Bot, Plus, Phone, Trash2, Pencil, Cpu, PhoneCall, PhoneForwarded } from 'lucide-react';
 import { toast } from 'sonner';
 import { GREEK_VOICES, AI_PROVIDER } from '@voiceforge/shared';
 import type { AgentSummary, ApiResponse } from '@voiceforge/shared';
 import { AgentEditModal } from './agent-edit-modal';
 import { AssignNumberModal } from './assign-number-modal';
 import { AgentTestWidget } from '@/components/agent-test-widget';
-import { E2ETestModal } from './e2e-test-modal';
 
 export default function AgentsPage() {
   const { t } = useI18n();
@@ -29,7 +28,8 @@ export default function AgentsPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [testingAgent, setTestingAgent] = useState<{ id: string; name: string } | null>(null);
   const [assigningNumber, setAssigningNumber] = useState<{ id: string; name: string } | null>(null);
-  const [e2eTestAgent, setE2eTestAgent] = useState<{ id: string; name: string } | null>(null);
+  const [isDeletingTests, setIsDeletingTests] = useState(false);
+
 
   const loadAgents = useCallback(async () => {
     try {
@@ -57,6 +57,21 @@ export default function AgentsPage() {
       setAgents((prev) => prev.filter((a) => a.id !== agentId));
     } catch {
       toast.error(t.agents.deleteError);
+    }
+  };
+
+  const handleDeleteAllTests = async () => {
+    if (!confirm(t.agents.e2eTestDeleteAllConfirm)) return;
+    setIsDeletingTests(true);
+    try {
+      const result = await api.delete<ApiResponse<{ deletedCount: number }>>('/api/calls/e2e-test');
+      if (result.success && result.data) {
+        toast.success(`${result.data.deletedCount} ${t.agents.e2eTestDeletedAll}`);
+      }
+    } catch {
+      toast.error(t.agents.e2eTestDeleteError);
+    } finally {
+      setIsDeletingTests(false);
     }
   };
 
@@ -89,9 +104,21 @@ export default function AgentsPage() {
         title={t.agents.title}
         description={t.agents.description}
         action={
-          <Button leftIcon={<Plus className="w-4 h-4" />} onClick={() => setShowCreateModal(true)}>
-            {t.agents.createNew}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleDeleteAllTests}
+              disabled={isDeletingTests}
+              className="text-danger-500 hover:text-danger-600"
+              leftIcon={<Trash2 className="w-4 h-4" />}
+            >
+              {t.agents.e2eTestDeleteAll}
+            </Button>
+            <Button leftIcon={<Plus className="w-4 h-4" />} onClick={() => setShowCreateModal(true)}>
+              {t.agents.createNew}
+            </Button>
+          </div>
         }
       />
 
@@ -184,7 +211,7 @@ export default function AgentsPage() {
                           })
                         }
                         className="text-green-600 hover:text-green-700 hover:bg-green-50"
-                        leftIcon={<MessageCircle className="w-3.5 h-3.5" />}
+                        leftIcon={<Phone className="w-3.5 h-3.5" />}
                       >
                         {t.agents.testAgent}
                       </Button>
@@ -206,20 +233,7 @@ export default function AgentsPage() {
                         {t.agents.assignNumber}
                       </Button>
                     )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        setE2eTestAgent({
-                          id: agent.id,
-                          name: agent.name,
-                        })
-                      }
-                      className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
-                      leftIcon={<FlaskConical className="w-3.5 h-3.5" />}
-                    >
-                      {t.agents.e2eTest}
-                    </Button>
+
                     <Button
                       variant="ghost"
                       size="sm"
@@ -283,14 +297,7 @@ export default function AgentsPage() {
         />
       )}
 
-      {/* E2E Test Modal */}
-      {e2eTestAgent && (
-        <E2ETestModal
-          agentId={e2eTestAgent.id}
-          agentName={e2eTestAgent.name}
-          onClose={() => setE2eTestAgent(null)}
-        />
-      )}
+
     </div>
   );
 }
