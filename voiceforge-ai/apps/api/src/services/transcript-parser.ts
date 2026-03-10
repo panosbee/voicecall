@@ -129,9 +129,9 @@ export function extractAppointmentFromTranscript(transcript: string): FallbackEx
   }
 
   // Reason: first caller message as a simple heuristic
-  const callerMessages = transcript.match(/\[Πελάτης\]:\s*(.+)/g);
+  const callerMessages = transcript.match(/\[(Πελάτης|Caller)\]:\s*(.+)/g);
   if (callerMessages && callerMessages.length > 0) {
-    const firstMsg = callerMessages[0]!.replace(/\[Πελάτης\]:\s*/, '').trim();
+    const firstMsg = callerMessages[0]!.replace(/\[(Πελάτης|Caller)\]:\s*/, '').trim();
     if (firstMsg.length > 5 && firstMsg.length < 200) {
       result.appointment_reason = firstMsg;
     }

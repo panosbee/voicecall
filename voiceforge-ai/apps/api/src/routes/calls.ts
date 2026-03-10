@@ -624,12 +624,13 @@ callRoutes.post('/record-conversation', zValidator('json', recordConversationSch
 
     // Build formatted transcript text
     const agentDisplayName = agent.name || 'AI Assistant';
+    const callerLabel = agent.language === 'en' ? 'Caller' : 'Πελάτης';
     let transcriptText = '';
     if (transcript.length > 0) {
       transcriptText = transcript
         .filter((msg) => msg.message)
         .map((msg) => {
-          const role = msg.role === 'agent' ? agentDisplayName : 'Πελάτης';
+          const role = msg.role === 'agent' ? agentDisplayName : callerLabel;
           return `[${role}]: ${msg.message}`;
         })
         .join('\n');

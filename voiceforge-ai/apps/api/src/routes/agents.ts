@@ -252,42 +252,50 @@ agentRoutes.post('/', zValidator('json', createAgentSchema), async (c) => {
   // Build webhook tools for live calls (all routed to ElevenLabs server-tool handler
   // which resolves customer context via agent_id automatically)
   const serverToolUrl = `${env.API_BASE_URL}/elevenlabs-webhooks/server-tool`;
+  const agentLang = body.language || 'el';
+  const isEn = agentLang === 'en';
   const webhookTools = [
     {
       name: 'check_availability',
-      description: 'Ελέγχει τα διαθέσιμα ραντεβού στο ημερολόγιο. ΠΑΝΤΑ κάλεσε αυτό το εργαλείο ΠΡΙΝ κλείσεις ραντεβού ώστε να δεις ποια slots είναι ελεύθερα. Επιστρέφει λίστα διαθέσιμων ωρών και κατειλημμένων slots για τη ζητούμενη ημερομηνία.',
+      description: isEn
+        ? 'Checks available appointment slots in the calendar. ALWAYS call this tool BEFORE booking an appointment so you can see which slots are free. Returns a list of available times and occupied slots for the requested date.'
+        : 'Ελέγχει τα διαθέσιμα ραντεβού στο ημερολόγιο. ΠΑΝΤΑ κάλεσε αυτό το εργαλείο ΠΡΙΝ κλείσεις ραντεβού ώστε να δεις ποια slots είναι ελεύθερα. Επιστρέφει λίστα διαθέσιμων ωρών και κατειλημμένων slots για τη ζητούμενη ημερομηνία.',
       url: serverToolUrl,
       method: 'POST',
       parameters: {
         type: 'object',
         properties: {
-          requested_date: { type: 'string', description: 'Ημερομηνία σε μορφή YYYY-MM-DD' },
-          service_type: { type: 'string', description: 'Τύπος ραντεβού' },
+          requested_date: { type: 'string', description: isEn ? 'Date in YYYY-MM-DD format' : 'Ημερομηνία σε μορφή YYYY-MM-DD' },
+          service_type: { type: 'string', description: isEn ? 'Appointment type' : 'Τύπος ραντεβού' },
         },
         required: ['requested_date'],
       },
     },
     {
       name: 'book_appointment',
-      description: 'Κλείνει ραντεβού στο ημερολόγιο. Πρώτα ΠΑΝΤΑ κάλεσε check_availability. Αν η ώρα είναι πιασμένη, θα λάβεις slot_taken=true και την πιο κοντινή διαθέσιμη ώρα — πρότεινέ τη στον πελάτη.',
+      description: isEn
+        ? 'Books an appointment in the calendar. ALWAYS call check_availability first. If the time slot is taken, you will receive slot_taken=true and the nearest available time — suggest it to the caller.'
+        : 'Κλείνει ραντεβού στο ημερολόγιο. Πρώτα ΠΑΝΤΑ κάλεσε check_availability. Αν η ώρα είναι πιασμένη, θα λάβεις slot_taken=true και την πιο κοντινή διαθέσιμη ώρα — πρότεινέ τη στον πελάτη.',
       url: serverToolUrl,
       method: 'POST',
       parameters: {
         type: 'object',
         properties: {
-          date: { type: 'string', description: 'Ημερομηνία YYYY-MM-DD' },
-          time: { type: 'string', description: 'Ώρα HH:MM' },
-          caller_name: { type: 'string', description: 'Όνομα καλούντα' },
-          caller_phone: { type: 'string', description: 'Τηλέφωνο καλούντα' },
-          service_type: { type: 'string', description: 'Τύπος ραντεβού' },
-          notes: { type: 'string', description: 'Σημειώσεις' },
+          date: { type: 'string', description: isEn ? 'Date YYYY-MM-DD' : 'Ημερομηνία YYYY-MM-DD' },
+          time: { type: 'string', description: isEn ? 'Time HH:MM' : 'Ώρα HH:MM' },
+          caller_name: { type: 'string', description: isEn ? 'Caller name' : 'Όνομα καλούντα' },
+          caller_phone: { type: 'string', description: isEn ? 'Caller phone' : 'Τηλέφωνο καλούντα' },
+          service_type: { type: 'string', description: isEn ? 'Appointment type' : 'Τύπος ραντεβού' },
+          notes: { type: 'string', description: isEn ? 'Notes' : 'Σημειώσεις' },
         },
         required: ['date', 'time', 'caller_name', 'caller_phone'],
       },
     },
     {
       name: 'get_current_datetime',
-      description: 'Επιστρέφει την τρέχουσα ημερομηνία και ώρα. Κάλεσε αυτό το εργαλείο αν ο πελάτης ρωτήσει τι μέρα ή ώρα είναι, ή αν χρειάζεσαι να ξέρεις τη σημερινή ημερομηνία για να κλείσεις ραντεβού.',
+      description: isEn
+        ? 'Returns the current date and time. Call this tool if the caller asks what day or time it is, or if you need to know today\'s date to book an appointment.'
+        : 'Επιστρέφει την τρέχουσα ημερομηνία και ώρα. Κάλεσε αυτό το εργαλείο αν ο πελάτης ρωτήσει τι μέρα ή ώρα είναι, ή αν χρειάζεσαι να ξέρεις τη σημερινή ημερομηνία για να κλείσεις ραντεβού.',
       url: serverToolUrl,
       method: 'POST',
       parameters: {
@@ -297,20 +305,24 @@ agentRoutes.post('/', zValidator('json', createAgentSchema), async (c) => {
     },
     {
       name: 'get_caller_history',
-      description: 'Ελέγχει αν ο καλών έχει καλέσει ξανά και ανακτά το ιστορικό προηγούμενων κλήσεων. Κάλεσε αυτό το εργαλείο στην αρχή κάθε κλήσης με το τηλέφωνο του καλούντα για να θυμηθείς τι ειπώθηκε σε προηγούμενες κλήσεις.',
+      description: isEn
+        ? 'Checks if the caller has called before and retrieves history from previous calls. Call this tool at the START of every call with the caller\'s phone number to remember what was said in previous calls.'
+        : 'Ελέγχει αν ο καλών έχει καλέσει ξανά και ανακτά το ιστορικό προηγούμενων κλήσεων. Κάλεσε αυτό το εργαλείο στην αρχή κάθε κλήσης με το τηλέφωνο του καλούντα για να θυμηθείς τι ειπώθηκε σε προηγούμενες κλήσεις.',
       url: serverToolUrl,
       method: 'POST',
       parameters: {
         type: 'object',
         properties: {
-          caller_phone: { type: 'string', description: 'Τηλέφωνο του καλούντα σε μορφή +30...' },
+          caller_phone: { type: 'string', description: isEn ? 'Caller phone in +30... format' : 'Τηλέφωνο του καλούντα σε μορφή +30...' },
         },
         required: ['caller_phone'],
       },
     },
     {
       name: 'get_business_hours',
-      description: 'Επιστρέφει το ωράριο λειτουργίας του γραφείου. Κάλεσε αυτό αν ο πελάτης ρωτήσει πότε είναι ανοιχτά.',
+      description: isEn
+        ? 'Returns the office business hours. Call this if the caller asks when the office is open.'
+        : 'Επιστρέφει το ωράριο λειτουργίας του γραφείου. Κάλεσε αυτό αν ο πελάτης ρωτήσει πότε είναι ανοιχτά.',
       url: serverToolUrl,
       method: 'POST',
       parameters: {

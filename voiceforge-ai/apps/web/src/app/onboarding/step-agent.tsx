@@ -9,10 +9,9 @@ import { useEffect, useCallback, type FormEvent } from 'react';
 import { Button, Input, Textarea, Select } from '@/components/ui';
 import { useI18n } from '@/lib/i18n';
 import { KnowledgeBaseUpload } from '@/components/knowledge-base-upload';
-import { INDUSTRY_LABELS } from '@/lib/utils';
-import { GREEK_VOICES } from '@voiceforge/shared';
+import { GREEK_VOICES, INDUSTRY_TEMPLATES, getTemplateContent } from '@voiceforge/shared';
 import type { OnboardingData } from './page';
-import type { KBDocumentSummary } from '@voiceforge/shared';
+import type { KBDocumentSummary, Industry } from '@voiceforge/shared';
 
 interface StepAgentProps {
   data: OnboardingData;
@@ -21,34 +20,51 @@ interface StepAgentProps {
   onBack: () => void;
 }
 
-/** Generate default greeting and instructions based on industry */
-function getDefaults(industry: string, businessName: string) {
-  const industryLabel = INDUSTRY_LABELS[industry] ?? 'Επιχείρηση';
+/** Generate default greeting and instructions based on industry + locale */
+function getDefaults(industry: string, businessName: string, locale: string) {
+  const template = INDUSTRY_TEMPLATES[industry as Industry];
+  if (template) {
+    const content = getTemplateContent(template, locale);
+    // Replace business name placeholder in greeting
+    const greeting = content.greeting.replace(
+      /στο (δικηγορικό γραφείο|ιατρείο|οδοντιατρείο|μεσιτικό μας γραφείο|κτηνιατρείο|λογιστικό γραφείο|the law office|the medical practice|the dental clinic|our real estate agency|the veterinary clinic|the accounting office)/i,
+      locale.startsWith('en') ? `at ${businessName}` : `στο ${businessName}`,
+    );
+    return { agentName: content.agentName, greeting, instructions: content.instructions };
+  }
 
-  const greeting = `Γεια σας, καλωσορίσατε στο ${businessName}! Με λένε {{agent_name}} και είμαι η ψηφιακή βοηθός σας. Πώς μπορώ να σας εξυπηρετήσω;`;
+  // Fallback for unknown industry
+  const isEn = locale.startsWith('en');
+  const greeting = isEn
+    ? `Hello, welcome to ${businessName}! My name is {{agent_name}} and I'm your digital assistant. How can I help you?`
+    : `Γεια σας, καλωσορίσατε στο ${businessName}! Με λένε {{agent_name}} και είμαι η ψηφιακή βοηθός σας. Πώς μπορώ να σας εξυπηρετήσω;`;
 
-  const instructions = `Είσαι η ψηφιακή βοηθός (ρεσεψιονίστ) για "${businessName}" (${industryLabel}).
+  const instructions = isEn
+    ? `You are the digital receptionist for "${businessName}".
+
+Basic rules:
+- Always be polite and professional
+- If the caller asks something you don't know, say someone from the office will call back
+- ALWAYS call check_availability before booking — then call book_appointment with: date, time, name, phone
+- Always ask for the caller's full name and phone number before booking
+- Keep your answers short (1-2 sentences maximum)`
+    : `Είσαι η ψηφιακή βοηθός (ρεσεψιονίστ) για "${businessName}".
 
 Βασικοί κανόνες:
 - Μίλα ΠΑΝΤΑ στα ελληνικά, με ευγενικό και επαγγελματικό ύφος
 - Χρησιμοποίησε τον πληθυντικό ευγενείας
 - Αν ο καλών ρωτήσει κάτι που δεν γνωρίζεις, πες ότι θα τον καλέσει πίσω κάποιος από το γραφείο
-- Μπορείς να ελέγξεις διαθεσιμότητα ραντεβού και να κλείσεις ραντεβού
+- ΠΑΝΤΑ κάλεσε check_availability πριν κλείσεις ραντεβού — μετά κάλεσε book_appointment με: ημερομηνία, ώρα, όνομα, τηλέφωνο
 - Ζήτα πάντα το ονοματεπώνυμο και τον αριθμό τηλεφώνου πριν κλείσεις ραντεβού
-- Μην δίνεις ιατρικές/νομικές/οικονομικές συμβουλές — παραπέμψε στον ειδικό
-- Κράτα σύντομες τις απαντήσεις σου (1-2 προτάσεις maximum)
+- Κράτα σύντομες τις απαντήσεις σου (1-2 προτάσεις maximum)`;
 
-Ωράριο λειτουργίας: Δευτέρα-Παρασκευή 09:00-17:00
-Διεύθυνση: {{var_address}}
-Τηλέφωνο: {{var_phone}}`;
-
-  return { greeting, instructions };
+  return { agentName: isEn ? 'Sophia' : 'Σοφία', greeting, instructions };
 }
 
 // voiceOptions built inside component to use i18n
 
 export function StepAgent({ data, updateData, onNext, onBack }: StepAgentProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
 
   const voiceOptions = GREEK_VOICES.map((v) => ({
     value: v.id,
@@ -58,14 +74,14 @@ export function StepAgent({ data, updateData, onNext, onBack }: StepAgentProps) 
   // Auto-fill defaults when user first lands on this step
   useEffect(() => {
     if (!data.greeting && !data.instructions && data.industry) {
-      const defaults = getDefaults(data.industry, data.businessName);
+      const defaults = getDefaults(data.industry, data.businessName, locale);
       updateData({
-        agentName: t.onboarding.defaultAgentName,
+        agentName: defaults.agentName,
         greeting: defaults.greeting,
         instructions: defaults.instructions,
       });
     }
-  }, [data.greeting, data.instructions, data.industry, data.businessName, updateData]);
+  }, [data.greeting, data.instructions, data.industry, data.businessName, locale, updateData]);
 
   // Track KB document IDs for agent creation
   const handleKBDocumentsChange = useCallback((docs: KBDocumentSummary[]) => {

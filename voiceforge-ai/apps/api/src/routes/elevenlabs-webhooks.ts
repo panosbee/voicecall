@@ -97,11 +97,12 @@ elevenlabsWebhookRoutes.post('/post-conversation', async (c) => {
     const customer = agent.customer;
 
     // Build formatted transcript from message array
+    const callerLabel = agent.language === 'en' ? 'Caller' : 'Πελάτης';
     let transcriptText = '';
     if (payload.transcript && Array.isArray(payload.transcript)) {
       transcriptText = payload.transcript
         .map((msg) => {
-          const role = msg.role === 'agent' ? agent.name : 'Πελάτης';
+          const role = msg.role === 'agent' ? agent.name : callerLabel;
           return `[${role}]: ${msg.message}`;
         })
         .join('\n');
