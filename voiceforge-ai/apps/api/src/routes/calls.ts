@@ -255,7 +255,7 @@ callRoutes.get('/calendar/month', zValidator('query', calendarSchema), async (c)
 
 // ═══════════════════════════════════════════════════════════════════
 // DELETE /calls/e2e-test/:id — Delete a test call
-// Only allows deletion of calls with metadata.isE2ETest = true
+// Allows deletion of calls with metadata.isE2ETest or isWidgetTest
 // ═══════════════════════════════════════════════════════════════════
 
 callRoutes.delete('/e2e-test/:id', async (c) => {
@@ -278,9 +278,9 @@ callRoutes.delete('/e2e-test/:id', async (c) => {
     return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Call not found' } }, 404);
   }
 
-  // Safety: only delete test calls
+  // Safety: only delete test calls (legacy E2E or widget recordings)
   const meta = callRecord.metadata as Record<string, unknown> | null;
-  if (!meta || meta.isE2ETest !== true) {
+  if (!meta || (meta.isE2ETest !== true && meta.isWidgetTest !== true)) {
     return c.json<ApiResponse>({ success: false, error: { code: 'FORBIDDEN', message: 'Only test calls can be deleted' } }, 403);
   }
 
@@ -307,7 +307,7 @@ callRoutes.delete('/e2e-test/:id', async (c) => {
 
 // ═══════════════════════════════════════════════════════════════════
 // DELETE /calls/e2e-test — Delete ALL test calls for current customer
-// Bulk cleanup of all E2E test data
+// Bulk cleanup of all E2E + widget test data
 // ═══════════════════════════════════════════════════════════════════
 
 callRoutes.delete('/e2e-test', async (c) => {
@@ -321,14 +321,14 @@ callRoutes.delete('/e2e-test', async (c) => {
     return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Customer not found' } }, 404);
   }
 
-  // Find all E2E test call IDs first
+  // Find all test call IDs (legacy E2E + widget recordings)
   const testCalls = await db
     .select({ id: calls.id })
     .from(calls)
     .where(
       and(
         eq(calls.customerId, customer.id),
-        sql`${calls.metadata}->>'isE2ETest' = 'true'`,
+        sql`(${calls.metadata}->>'isE2ETest' = 'true' OR ${calls.metadata}->>'isWidgetTest' = 'true')`,
       ),
     );
 
@@ -341,7 +341,7 @@ callRoutes.delete('/e2e-test', async (c) => {
     .where(
       and(
         eq(calls.customerId, customer.id),
-        sql`${calls.metadata}->>'isE2ETest' = 'true'`,
+        sql`(${calls.metadata}->>'isE2ETest' = 'true' OR ${calls.metadata}->>'isWidgetTest' = 'true')`,
       ),
     );
   const testAgentIds = [...new Set(testCallsWithAgents.map(c => c.agentId).filter(Boolean))] as string[];
@@ -368,7 +368,7 @@ callRoutes.delete('/e2e-test', async (c) => {
     .where(
       and(
         eq(calls.customerId, customer.id),
-        sql`${calls.metadata}->>'isE2ETest' = 'true'`,
+        sql`(${calls.metadata}->>'isE2ETest' = 'true' OR ${calls.metadata}->>'isWidgetTest' = 'true')`,
       ),
     )
     .returning({ id: calls.id });
