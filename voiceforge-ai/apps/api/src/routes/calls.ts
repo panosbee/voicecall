@@ -13,6 +13,7 @@ import { authMiddleware, type AuthUser } from '../middleware/auth.js';
 import { createLogger } from '../config/logger.js';
 import { getMonthRangeInTimezone, parseDateTimeInTimezone } from '../services/timezone.js';
 import * as elevenlabsService from '../services/elevenlabs.js';
+import { extractAppointmentFromTranscript } from '../services/transcript-parser.js';
 import type { ApiResponse } from '@voiceforge/shared';
 
 const log = createLogger('calls');
@@ -662,6 +663,26 @@ callRoutes.post('/record-conversation', zValidator('json', recordConversationSch
           extractedData[key] = String(v.value);
         }
       }
+    }
+
+    // Fallback: if AI data collection returned nothing (agent missing platformSettings),
+    // parse the transcript text for date/time/name/phone patterns
+    const aiDataAvailable = Object.keys(extractedData).length > 0;
+    if (!aiDataAvailable && transcriptText) {
+      const fallback = extractAppointmentFromTranscript(transcriptText);
+      log.info({ conversationId, fallback }, 'AI data collection empty — using transcript fallback extraction');
+      for (const [key, val] of Object.entries(fallback)) {
+        if (val) extractedData[key] = val;
+      }
+
+      // Background: update the agent's platformSettings for future conversations
+      try {
+        if (agent.elevenlabsAgentId) {
+          elevenlabsService.updateAgent(agent.elevenlabsAgentId, { name: agent.name }).catch((err) => {
+            log.warn({ error: err, agentId: agent.elevenlabsAgentId }, 'Background agent platformSettings update failed');
+          });
+        }
+      } catch { /* non-critical */ }
     }
 
     // Check evaluation criteria results (AI-determined)

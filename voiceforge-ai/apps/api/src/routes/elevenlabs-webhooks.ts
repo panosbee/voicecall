@@ -13,6 +13,7 @@ import * as elevenlabsService from '../services/elevenlabs.js';
 import { sendCallSummaryEmail, isEmailConfigured } from '../services/email.js';
 import { sendCallSummarySms, isSmsConfigured } from '../services/telnyx.js';
 import { parseDateTimeInTimezone } from '../services/timezone.js';
+import { extractAppointmentFromTranscript } from '../services/transcript-parser.js';
 
 const log = createLogger('elevenlabs-webhooks');
 
@@ -154,6 +155,26 @@ elevenlabsWebhookRoutes.post('/post-conversation', async (c) => {
       } else if (typeof val === 'string' && val.trim()) {
         extractedData[key] = val;
       }
+    }
+
+    // Fallback: if AI data collection returned nothing (agent missing platformSettings),
+    // parse the transcript text for date/time/name/phone patterns
+    const aiDataAvailable = Object.keys(extractedData).length > 0;
+    if (!aiDataAvailable && transcriptText) {
+      const fallback = extractAppointmentFromTranscript(transcriptText);
+      log.info({ conversationId, fallback }, 'AI data collection empty — using transcript fallback extraction');
+      for (const [key, val] of Object.entries(fallback)) {
+        if (val) extractedData[key] = val;
+      }
+
+      // Background: update the agent's platformSettings for future conversations
+      try {
+        if (agentId && elevenlabsService.isConfigured()) {
+          elevenlabsService.updateAgent(agentId, { name: agent.name }).catch((err) => {
+            log.warn({ error: err, agentId }, 'Background agent platformSettings update failed');
+          });
+        }
+      } catch { /* non-critical */ }
     }
 
     // Use AI-extracted data (works for both Greek and English)
