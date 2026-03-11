@@ -621,6 +621,9 @@ export interface Translations {
     appointmentCancelled: string;
     appointmentCompleted: string;
     appointmentNoShow: string;
+    deleteAppointment: string;
+    appointmentDeleted: string;
+    deleteAppointmentConfirm: string;
     noEvents: string;
     eventsCount: string;
   };

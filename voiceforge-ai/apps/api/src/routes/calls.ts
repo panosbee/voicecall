@@ -271,6 +271,38 @@ callRoutes.get('/calendar/appointments', zValidator('query', appointmentsCalenda
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// DELETE /calls/calendar/appointments/:appointmentId — Delete an appointment
+// ═══════════════════════════════════════════════════════════════════
+
+callRoutes.delete('/calendar/appointments/:appointmentId', async (c) => {
+  const user = c.get('user');
+  const appointmentId = c.req.param('appointmentId');
+
+  const customer = await db.query.customers.findFirst({
+    where: eq(customers.userId, user.sub),
+  });
+
+  if (!customer) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Customer not found' } }, 404);
+  }
+
+  // Verify appointment belongs to this customer
+  const appointment = await db.query.appointments.findFirst({
+    where: and(eq(appointments.id, appointmentId), eq(appointments.customerId, customer.id)),
+  });
+
+  if (!appointment) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Appointment not found' } }, 404);
+  }
+
+  await db.delete(appointments).where(eq(appointments.id, appointmentId));
+
+  log.info({ appointmentId, customerId: customer.id }, 'Appointment deleted');
+
+  return c.json<ApiResponse>({ success: true, data: { deletedId: appointmentId } });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // GET /calls/:id — Get full call detail with transcript
 // MUST be after all static GET routes to avoid /:id catching "stats" etc.
 // ═══════════════════════════════════════════════════════════════════

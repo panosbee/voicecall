@@ -29,6 +29,7 @@ import {
   Volume2,
   ExternalLink,
   CalendarCheck,
+  Trash2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ApiResponse } from '@voiceforge/shared';
@@ -529,6 +530,27 @@ export default function CalendarPage() {
                                     </span>
                                   </div>
                                 </div>
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    if (!confirm(t.calendar.deleteAppointmentConfirm)) return;
+                                    try {
+                                      const res = await api.delete<ApiResponse>(`/api/calls/calendar/appointments/${apt.id}`);
+                                      if (res.success) {
+                                        toast.success(t.calendar.appointmentDeleted);
+                                        loadCalls();
+                                      } else {
+                                        toast.error(res.error?.message ?? 'Error');
+                                      }
+                                    } catch {
+                                      toast.error('Error');
+                                    }
+                                  }}
+                                  className="shrink-0 p-1.5 rounded-md text-text-tertiary hover:text-red-600 hover:bg-red-50 transition-colors"
+                                  title={t.calendar.deleteAppointment}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                               </div>
                               {apt.notes && (
                                 <p className="text-[11px] text-text-tertiary mt-1.5 ml-[72px] line-clamp-2">
