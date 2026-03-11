@@ -10,6 +10,7 @@ import { db } from './db/connection.js';
 import { calls, webhookEvents, auditLogs } from './db/schema/index.js';
 import { lte, sql } from 'drizzle-orm';
 import { env } from './config/env.js';
+import { runConversationSync } from './workers/conversation-sync.js';
 
 const log = logger.child({ module: 'worker' });
 
@@ -70,6 +71,11 @@ const tasks: ScheduledTask[] = [
     name: 'webhook-log-cleanup',
     intervalMs: 24 * 60 * 60 * 1000, // Every 24 hours
     handler: runWebhookCleanup,
+  },
+  {
+    name: 'conversation-sync',
+    intervalMs: 2 * 60 * 1000, // Every 2 minutes — safety net
+    handler: runConversationSync,
   },
 ];
 
