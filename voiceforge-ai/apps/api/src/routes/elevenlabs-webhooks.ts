@@ -502,12 +502,25 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
     switch (toolName) {
       case 'check_availability': {
         const requestedDate = parameters?.requested_date as string;
+        const BUSINESS_SLOTS = ['09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '12:00', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30', '17:00'];
 
-        if (agentRecord) {
-          // Compare dates in customer's timezone
-          const { getDayRangeInTimezone, formatTimeInTimezone } = await import('../services/timezone.js');
-          const { startDate: dayStart, endDate: dayEnd } = getDayRangeInTimezone(requestedDate, customerTz);
+        if (!agentRecord) {
+          return c.json({
+            error: true,
+            message: 'Δεν βρέθηκε ο βοηθός. Δεν μπορώ να ελέγξω διαθεσιμότητα.',
+          });
+        }
 
+        const { getDayRangeInTimezone, formatTimeInTimezone } = await import('../services/timezone.js');
+
+        // Helper: get available slots for a single date
+        const getAvailableForDate = async (dateStr: string) => {
+          const { startDate: dayStart, endDate: dayEnd } = getDayRangeInTimezone(dateStr, customerTz);
+          // Check if weekend (Sat=6, Sun=0)
+          const dayOfWeek = dayStart.getDay();
+          if (dayOfWeek === 0 || dayOfWeek === 6) {
+            return { date: dateStr, available: [] as string[], booked: [] as string[], isWeekend: true };
+          }
           const existingApts = await db.query.appointments.findMany({
             where: and(
               eq(appointments.customerId, agentRecord.customerId),
@@ -515,33 +528,58 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
               lte(appointments.scheduledAt, dayEnd),
             ),
           });
-
           const busyTimes = existingApts
             .filter((a) => a.status !== 'cancelled')
             .map((a) => formatTimeInTimezone(new Date(a.scheduledAt), customerTz));
+          const available = BUSINESS_SLOTS.filter((t) => !busyTimes.includes(t));
+          return { date: dateStr, available, booked: busyTimes, isWeekend: false };
+        };
 
-          const allSlots = ['09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '12:00', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30', '17:00'];
-          const available = allSlots.filter((t) => !busyTimes.includes(t));
+        // Check the requested date
+        const result = await getAvailableForDate(requestedDate);
 
-          return c.json({
-            date: requestedDate,
-            total_slots: allSlots.length,
-            booked_count: busyTimes.length,
-            available_count: available.length,
-            available_slots: available.map((time) => ({
-              date: requestedDate, time, available: true,
-            })),
-            booked_slots: busyTimes,
-          });
+        // If the requested date has NO available slots, also check next 3 weekdays
+        let nextDaysAvailability: Array<{ date: string; available_count: number; sample_slots: string[] }> = [];
+        if (result.available.length === 0) {
+          const baseDate = new Date(requestedDate + 'T12:00:00');
+          let checked = 0;
+          let offset = 1;
+          while (checked < 3 && offset <= 14) {
+            const nextDate = new Date(baseDate);
+            nextDate.setDate(nextDate.getDate() + offset);
+            const nextDateStr = nextDate.toISOString().split('T')[0]!;
+            const nextResult = await getAvailableForDate(nextDateStr);
+            if (!nextResult.isWeekend && nextResult.available.length > 0) {
+              nextDaysAvailability.push({
+                date: nextDateStr,
+                available_count: nextResult.available.length,
+                sample_slots: nextResult.available.slice(0, 5),
+              });
+              checked++;
+            }
+            offset++;
+          }
         }
 
         return c.json({
-          available_slots: [
-            { date: requestedDate, time: '10:00', available: true },
-            { date: requestedDate, time: '11:00', available: true },
-            { date: requestedDate, time: '14:00', available: true },
-            { date: requestedDate, time: '16:00', available: true },
-          ],
+          date: requestedDate,
+          business_hours: '09:00-17:00 (Δευ-Παρ), μεσημεριανό διάλειμμα 12:30-14:00',
+          total_slots: BUSINESS_SLOTS.length,
+          booked_count: result.booked.length,
+          available_count: result.available.length,
+          is_weekend: result.isWeekend,
+          available_slots: result.available.map((time) => ({
+            date: requestedDate, time, available: true,
+          })),
+          booked_slots: result.booked,
+          ...(result.available.length === 0 && !result.isWeekend
+            ? { message: `Η ${requestedDate} είναι πλήρης. Δες τις εναλλακτικές ημερομηνίες παρακάτω.` }
+            : result.isWeekend
+            ? { message: `Η ${requestedDate} είναι Σαββατοκύριακο. Δεν δεχόμαστε ραντεβού. Δες τις εναλλακτικές ημερομηνίες παρακάτω.` }
+            : {}),
+          ...(nextDaysAvailability.length > 0
+            ? { next_available_days: nextDaysAvailability }
+            : {}),
         });
       }
 
@@ -552,11 +590,44 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
         const callerPhone = parameters?.caller_phone as string;
         const serviceType = parameters?.service_type as string | undefined;
         const notes = parameters?.notes as string | undefined;
+        const BUSINESS_SLOTS = ['09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '12:00', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30', '17:00'];
 
         log.info({ date, time, callerName, callerPhone }, 'Booking appointment via ElevenLabs tool');
 
         if (agentRecord && date && time) {
           const { parseDateTimeInTimezone: parseDT, getDayRangeInTimezone, formatTimeInTimezone } = await import('../services/timezone.js');
+
+          // ── Weekend check ────────────────────────────────────────
+          const dateObj = new Date(date + 'T12:00:00');
+          const dayOfWeek = dateObj.getDay();
+          if (dayOfWeek === 0 || dayOfWeek === 6) {
+            return c.json({
+              success: false,
+              message: `Η ${date} είναι Σαββατοκύριακο. Δεν δεχόμαστε ραντεβού. Ρώτα τον πελάτη για ημέρα Δευτέρα-Παρασκευή.`,
+            });
+          }
+
+          // ── Business hours check ─────────────────────────────────
+          if (!BUSINESS_SLOTS.includes(time)) {
+            const toMinutes = (t: string) => {
+              const [h, m] = t.split(':');
+              return parseInt(h ?? '0', 10) * 60 + parseInt(m ?? '0', 10);
+            };
+            const reqMin = toMinutes(time);
+            // Find nearest valid business slot
+            const nearest = BUSINESS_SLOTS.reduce((closest, slot) =>
+              Math.abs(toMinutes(slot) - reqMin) < Math.abs(toMinutes(closest) - reqMin) ? slot : closest
+            );
+            return c.json({
+              success: false,
+              outside_business_hours: true,
+              requested_time: time,
+              message: `Η ώρα ${time} είναι εκτός ωραρίου (09:00-17:00, διάλειμμα 12:30-14:00). Η πιο κοντινή διαθέσιμη ώρα είναι ${nearest}.`,
+              nearest_valid_time: nearest,
+              business_hours: '09:00-12:00, 14:00-17:00 (Δευ-Παρ)',
+            });
+          }
+
           const scheduledAt = parseDT(date, time, customerTz);
 
           if (isNaN(scheduledAt.getTime())) {
@@ -583,8 +654,7 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
 
           if (busyTimes.includes(time)) {
             // Find nearest available slot
-            const allSlots = ['09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '12:00', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30', '17:00'];
-            const freeSlots = allSlots.filter(t => !busyTimes.includes(t));
+            const freeSlots = BUSINESS_SLOTS.filter(t => !busyTimes.includes(t));
 
             // Find closest free slot to the requested time
             let nearestSlot: string | null = null;
@@ -605,7 +675,7 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
               requested_time: time,
               message: nearestSlot
                 ? `Η ώρα ${time} είναι ήδη κρατημένη. Η πιο κοντινή διαθέσιμη ώρα είναι ${nearestSlot}. Θέλει ο πελάτης να κλείσει στις ${nearestSlot};`
-                : `Η ώρα ${time} είναι ήδη κρατημένη και δεν υπάρχουν άλλα διαθέσιμα slots για ${date}.`,
+                : `Η ώρα ${time} είναι ήδη κρατημένη και δεν υπάρχουν άλλα διαθέσιμα slots για ${date}. Ρώτα τον πελάτη αν θέλει άλλη ημέρα.`,
               nearest_available: nearestSlot,
               available_slots: freeSlots,
             });
