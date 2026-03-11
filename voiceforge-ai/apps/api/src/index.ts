@@ -111,7 +111,7 @@ app.route('/webhooks/elevenlabs', elevenlabsWebhookRoutes);
 app.route('/registration', registrationRoutes);
 
 // Widget embed routes (public — accessed from customer websites, CORS *)
-app.use('/widget/*', cors({ origin: '*', allowMethods: ['GET', 'OPTIONS'], maxAge: 86400 }));
+app.use('/widget/*', cors({ origin: '*', allowMethods: ['GET', 'POST', 'OPTIONS'], allowHeaders: ['Content-Type', 'Accept'], maxAge: 86400 }));
 app.route('/widget', widgetRoutes);
 
 // Admin panel (protected by ADMIN_SECRET)

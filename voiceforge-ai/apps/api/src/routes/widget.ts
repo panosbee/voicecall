@@ -5,11 +5,12 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { Hono } from 'hono';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, desc } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { agents } from '../db/schema/index.js';
+import { agents, calls, webhookEvents } from '../db/schema/index.js';
 import { createLogger } from '../config/logger.js';
 import { env } from '../config/env.js';
+import * as elevenlabsService from '../services/elevenlabs.js';
 
 const log = createLogger('widget');
 
@@ -67,6 +68,62 @@ widgetRoutes.get('/:agentId/config', async (c) => {
   } catch (error) {
     log.error({ error, agentId }, 'Failed to fetch widget config');
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ── POST /widget/:agentId/record ─────────────────────────────────
+// Public endpoint: triggers conversation recording for embedded widgets.
+// No auth required — validates via agentId + widgetEnabled check.
+// The conversation-sync worker also catches these, but this gives
+// immediate recording when the user closes the widget.
+widgetRoutes.post('/:agentId/record', async (c) => {
+  const agentId = c.req.param('agentId');
+
+  try {
+    const agent = await db.query.agents.findFirst({
+      where: eq(agents.id, agentId),
+      with: { customer: true },
+    });
+
+    if (!agent || !agent.widgetEnabled || !agent.elevenlabsAgentId) {
+      return c.json({ success: false, error: 'Not available' }, 404);
+    }
+
+    // Fetch recent conversations from ElevenLabs for this agent
+    const conversations = await elevenlabsService.getConversations(agent.elevenlabsAgentId);
+    if (!conversations || conversations.length === 0) {
+      return c.json({ success: true, status: 'no_conversation' });
+    }
+
+    // Find the most recent conversation that we haven't recorded yet
+    for (const conv of conversations) {
+      const conversationId = ((conv as Record<string, any>).conversationId ?? (conv as Record<string, any>).conversation_id) as string | undefined;
+      if (!conversationId) continue;
+
+      // Check dedup
+      const existing = await db.query.webhookEvents.findFirst({
+        where: eq(webhookEvents.eventId, conversationId),
+      });
+      if (existing) continue;
+
+      const existingCall = await db.query.calls.findFirst({
+        where: eq(calls.telnyxConversationId, conversationId),
+      });
+      if (existingCall) continue;
+
+      // Found an unrecorded conversation — delegate to the sync worker's logic
+      // Import and call the shared function
+      const { runConversationSync } = await import('../workers/conversation-sync.js');
+      // Trigger a full sync for just this agent — the worker handles everything
+      await runConversationSync();
+
+      return c.json({ success: true, status: 'recording_triggered' });
+    }
+
+    return c.json({ success: true, status: 'already_recorded' });
+  } catch (error) {
+    log.error({ error, agentId }, 'Widget record error');
+    return c.json({ success: false, error: 'Recording error' }, 500);
   }
 });
 
@@ -281,6 +338,34 @@ function generateWidgetScript(apiBaseUrl: string): string {
     var iconEl = document.getElementById('vf-fab-icon');
     if (iconEl) iconEl.innerHTML = openIcon;
     if (overlay) { overlay.remove(); overlay = null; }
+
+    // Record the conversation — fire and forget with retry
+    recordConversation(0);
+  }
+
+  // ── Record conversation after widget closes ──
+  function recordConversation(attempt) {
+    if (attempt > 2) return; // max 3 attempts
+    var delay = attempt === 0 ? 5000 : 8000;
+    setTimeout(function() {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', API_URL + '/widget/' + encodeURIComponent(AGENT_ID) + '/record');
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          try {
+            var resp = JSON.parse(xhr.responseText);
+            if (resp.status === 'no_conversation' && attempt < 2) {
+              recordConversation(attempt + 1);
+            }
+          } catch(e) { /* ignore */ }
+        }
+      };
+      xhr.onerror = function() {
+        if (attempt < 2) recordConversation(attempt + 1);
+      };
+      xhr.send('{}');
+    }, delay);
   }
 
   // ── Escape HTML for safe rendering ──
