@@ -19,6 +19,82 @@ import type { ApiResponse } from '@voiceforge/shared';
 
 const log = createLogger('agents');
 
+/**
+ * Build client tool definitions for an agent.
+ * Client tools are executed by the browser via @elevenlabs/client SDK —
+ * the browser calls our API directly (works with localhost, no public URL needed).
+ */
+function buildClientToolDefs(language: string) {
+  const isEn = language === 'en';
+  return [
+    {
+      name: 'check_availability',
+      description: isEn
+        ? 'Checks available appointment slots in the calendar. ALWAYS call this tool BEFORE booking an appointment so you can see which slots are free. Returns a list of available times and occupied slots for the requested date.'
+        : 'Ελέγχει τα διαθέσιμα ραντεβού στο ημερολόγιο. ΠΑΝΤΑ κάλεσε αυτό το εργαλείο ΠΡΙΝ κλείσεις ραντεβού ώστε να δεις ποια slots είναι ελεύθερα. Επιστρέφει λίστα διαθέσιμων ωρών και κατειλημμένων slots για τη ζητούμενη ημερομηνία.',
+      parameters: {
+        type: 'object' as const,
+        properties: {
+          requested_date: { type: 'string', description: isEn ? 'Date in YYYY-MM-DD format' : 'Ημερομηνία σε μορφή YYYY-MM-DD' },
+          service_type: { type: 'string', description: isEn ? 'Appointment type' : 'Τύπος ραντεβού' },
+        },
+        required: ['requested_date'],
+      },
+    },
+    {
+      name: 'book_appointment',
+      description: isEn
+        ? 'Books an appointment in the calendar. ALWAYS call check_availability first. If the time slot is taken, you will receive slot_taken=true and the nearest available time — suggest it to the caller.'
+        : 'Κλείνει ραντεβού στο ημερολόγιο. Πρώτα ΠΑΝΤΑ κάλεσε check_availability. Αν η ώρα είναι πιασμένη, θα λάβεις slot_taken=true και την πιο κοντινή διαθέσιμη ώρα — πρότεινέ τη στον πελάτη.',
+      parameters: {
+        type: 'object' as const,
+        properties: {
+          date: { type: 'string', description: isEn ? 'Date YYYY-MM-DD' : 'Ημερομηνία YYYY-MM-DD' },
+          time: { type: 'string', description: isEn ? 'Time HH:MM' : 'Ώρα HH:MM' },
+          caller_name: { type: 'string', description: isEn ? 'Caller name' : 'Όνομα καλούντα' },
+          caller_phone: { type: 'string', description: isEn ? 'Caller phone' : 'Τηλέφωνο καλούντα' },
+          service_type: { type: 'string', description: isEn ? 'Appointment type' : 'Τύπος ραντεβού' },
+          notes: { type: 'string', description: isEn ? 'Notes' : 'Σημειώσεις' },
+        },
+        required: ['date', 'time', 'caller_name', 'caller_phone'],
+      },
+    },
+    {
+      name: 'get_current_datetime',
+      description: isEn
+        ? 'Returns the current date and time. Call this tool if the caller asks what day or time it is, or if you need to know today\'s date to book an appointment.'
+        : 'Επιστρέφει την τρέχουσα ημερομηνία και ώρα. Κάλεσε αυτό το εργαλείο αν ο πελάτης ρωτήσει τι μέρα ή ώρα είναι, ή αν χρειάζεσαι να ξέρεις τη σημερινή ημερομηνία για να κλείσεις ραντεβού.',
+      parameters: {
+        type: 'object' as const,
+        properties: {},
+      },
+    },
+    {
+      name: 'get_caller_history',
+      description: isEn
+        ? 'Checks if the caller has called before and retrieves history from previous calls. Call this tool at the START of every call with the caller\'s phone number to remember what was said in previous calls.'
+        : 'Ελέγχει αν ο καλών έχει καλέσει ξανά και ανακτά το ιστορικό προηγούμενων κλήσεων. Κάλεσε αυτό το εργαλείο στην αρχή κάθε κλήσης με το τηλέφωνο του καλούντα για να θυμηθείς τι ειπώθηκε σε προηγούμενες κλήσεις.',
+      parameters: {
+        type: 'object' as const,
+        properties: {
+          caller_phone: { type: 'string', description: isEn ? 'Caller phone in +30... format' : 'Τηλέφωνο του καλούντα σε μορφή +30...' },
+        },
+        required: ['caller_phone'],
+      },
+    },
+    {
+      name: 'get_business_hours',
+      description: isEn
+        ? 'Returns the office business hours. Call this if the caller asks when the office is open.'
+        : 'Επιστρέφει το ωράριο λειτουργίας του γραφείου. Κάλεσε αυτό αν ο πελάτης ρωτήσει πότε είναι ανοιχτά.',
+      parameters: {
+        type: 'object' as const,
+        properties: {},
+      },
+    },
+  ];
+}
+
 export const agentRoutes = new Hono<{ Variables: { user: AuthUser } }>();
 
 // All agent routes require authentication
@@ -248,88 +324,9 @@ agentRoutes.post('/', zValidator('json', createAgentSchema), async (c) => {
 
   log.info({ customerId: customer.id, agentName: body.name, devBypass: isDevBypass() }, 'Creating agent');
 
-  // Build webhook tools for live calls (all routed to ElevenLabs server-tool handler
-  // which resolves customer context via agent_id automatically)
-  const serverToolUrl = `${env.API_BASE_URL}/elevenlabs-webhooks/server-tool`;
+  // Build client tools for this agent's language
   const agentLang = body.language || 'el';
-  const isEn = agentLang === 'en';
-  const webhookTools = [
-    {
-      name: 'check_availability',
-      description: isEn
-        ? 'Checks available appointment slots in the calendar. ALWAYS call this tool BEFORE booking an appointment so you can see which slots are free. Returns a list of available times and occupied slots for the requested date.'
-        : 'Ελέγχει τα διαθέσιμα ραντεβού στο ημερολόγιο. ΠΑΝΤΑ κάλεσε αυτό το εργαλείο ΠΡΙΝ κλείσεις ραντεβού ώστε να δεις ποια slots είναι ελεύθερα. Επιστρέφει λίστα διαθέσιμων ωρών και κατειλημμένων slots για τη ζητούμενη ημερομηνία.',
-      url: serverToolUrl,
-      method: 'POST',
-      parameters: {
-        type: 'object',
-        properties: {
-          requested_date: { type: 'string', description: isEn ? 'Date in YYYY-MM-DD format' : 'Ημερομηνία σε μορφή YYYY-MM-DD' },
-          service_type: { type: 'string', description: isEn ? 'Appointment type' : 'Τύπος ραντεβού' },
-        },
-        required: ['requested_date'],
-      },
-    },
-    {
-      name: 'book_appointment',
-      description: isEn
-        ? 'Books an appointment in the calendar. ALWAYS call check_availability first. If the time slot is taken, you will receive slot_taken=true and the nearest available time — suggest it to the caller.'
-        : 'Κλείνει ραντεβού στο ημερολόγιο. Πρώτα ΠΑΝΤΑ κάλεσε check_availability. Αν η ώρα είναι πιασμένη, θα λάβεις slot_taken=true και την πιο κοντινή διαθέσιμη ώρα — πρότεινέ τη στον πελάτη.',
-      url: serverToolUrl,
-      method: 'POST',
-      parameters: {
-        type: 'object',
-        properties: {
-          date: { type: 'string', description: isEn ? 'Date YYYY-MM-DD' : 'Ημερομηνία YYYY-MM-DD' },
-          time: { type: 'string', description: isEn ? 'Time HH:MM' : 'Ώρα HH:MM' },
-          caller_name: { type: 'string', description: isEn ? 'Caller name' : 'Όνομα καλούντα' },
-          caller_phone: { type: 'string', description: isEn ? 'Caller phone' : 'Τηλέφωνο καλούντα' },
-          service_type: { type: 'string', description: isEn ? 'Appointment type' : 'Τύπος ραντεβού' },
-          notes: { type: 'string', description: isEn ? 'Notes' : 'Σημειώσεις' },
-        },
-        required: ['date', 'time', 'caller_name', 'caller_phone'],
-      },
-    },
-    {
-      name: 'get_current_datetime',
-      description: isEn
-        ? 'Returns the current date and time. Call this tool if the caller asks what day or time it is, or if you need to know today\'s date to book an appointment.'
-        : 'Επιστρέφει την τρέχουσα ημερομηνία και ώρα. Κάλεσε αυτό το εργαλείο αν ο πελάτης ρωτήσει τι μέρα ή ώρα είναι, ή αν χρειάζεσαι να ξέρεις τη σημερινή ημερομηνία για να κλείσεις ραντεβού.',
-      url: serverToolUrl,
-      method: 'POST',
-      parameters: {
-        type: 'object',
-        properties: {},
-      },
-    },
-    {
-      name: 'get_caller_history',
-      description: isEn
-        ? 'Checks if the caller has called before and retrieves history from previous calls. Call this tool at the START of every call with the caller\'s phone number to remember what was said in previous calls.'
-        : 'Ελέγχει αν ο καλών έχει καλέσει ξανά και ανακτά το ιστορικό προηγούμενων κλήσεων. Κάλεσε αυτό το εργαλείο στην αρχή κάθε κλήσης με το τηλέφωνο του καλούντα για να θυμηθείς τι ειπώθηκε σε προηγούμενες κλήσεις.',
-      url: serverToolUrl,
-      method: 'POST',
-      parameters: {
-        type: 'object',
-        properties: {
-          caller_phone: { type: 'string', description: isEn ? 'Caller phone in +30... format' : 'Τηλέφωνο του καλούντα σε μορφή +30...' },
-        },
-        required: ['caller_phone'],
-      },
-    },
-    {
-      name: 'get_business_hours',
-      description: isEn
-        ? 'Returns the office business hours. Call this if the caller asks when the office is open.'
-        : 'Επιστρέφει το ωράριο λειτουργίας του γραφείου. Κάλεσε αυτό αν ο πελάτης ρωτήσει πότε είναι ανοιχτά.',
-      url: serverToolUrl,
-      method: 'POST',
-      parameters: {
-        type: 'object',
-        properties: {},
-      },
-    },
-  ];
+  const clientTools = buildClientToolDefs(agentLang);
 
   // ── Build enhanced instructions with timezone + memory + safety + language + CALENDAR ──
   const customerTz = customer.timezone || 'Europe/Athens';
@@ -360,7 +357,7 @@ agentRoutes.post('/', zValidator('json', createAgentSchema), async (c) => {
       }
 
       if (body.existingElevenlabsAgentId && !body.existingElevenlabsAgentId.startsWith('dev_')) {
-        // Reuse existing preview agent — update it with full config (webhook tools, proper name)
+        // Reuse existing preview agent — update it with full config (client tools, proper name)
         await elevenlabsService.updateAgent(body.existingElevenlabsAgentId, {
           name: `${body.name} - ${customer.businessName}`,
           instructions: enhancedInstructions,
@@ -368,6 +365,9 @@ agentRoutes.post('/', zValidator('json', createAgentSchema), async (c) => {
           voiceId,
           ttsModel: body.ttsModel,
           llmModel: body.llmModel,
+          clientTools,
+          supportedLanguages: supportedLangs,
+          forwardPhoneNumber: body.forwardPhoneNumber,
           voiceStability: body.voiceStability,
           voiceSimilarity: body.voiceSimilarity,
           voiceSpeed: body.voiceSpeed,
@@ -387,7 +387,7 @@ agentRoutes.post('/', zValidator('json', createAgentSchema), async (c) => {
           ttsModel: body.ttsModel,
           llmModel: body.llmModel,
           knowledgeBaseDocs,
-          webhookTools,
+          clientTools,
           forwardPhoneNumber: body.forwardPhoneNumber,
           voiceStability: body.voiceStability,
           voiceSimilarity: body.voiceSimilarity,
@@ -424,7 +424,7 @@ agentRoutes.post('/', zValidator('json', createAgentSchema), async (c) => {
         voiceId,
         language: body.language,
         supportedLanguages: supportedLangs,
-        tools: webhookTools,
+        tools: clientTools,
         forwardPhoneNumber: body.forwardPhoneNumber ?? null,
         dynamicVariables: body.dynamicVariables ?? {},
         ...(body.voiceStability !== undefined ? { voiceStability: body.voiceStability } : {}),
@@ -505,6 +505,10 @@ agentRoutes.patch('/:id', zValidator('json', updateAgentSchema), async (c) => {
       .filter(d => !!d.elevenlabsDocId)
       .map(d => ({ id: d.elevenlabsDocId!, name: d.name || d.elevenlabsDocId! }));
 
+    // Rebuild client tools with current language
+    const updateLang = body.language || (agent.language as string) || 'el';
+    const updateClientTools = buildClientToolDefs(updateLang);
+
     // Update on ElevenLabs (skip in dev bypass)
     if (!isDevBypass() && agent.elevenlabsAgentId && !agent.elevenlabsAgentId.startsWith('dev_')) {
       await elevenlabsService.updateAgent(agent.elevenlabsAgentId, {
@@ -512,10 +516,12 @@ agentRoutes.patch('/:id', zValidator('json', updateAgentSchema), async (c) => {
         instructions: updateEnhancedInstructions,
         greeting: body.greeting,
         voiceId: body.voiceId,
-        language: body.language || (agent.language as string),
+        language: updateLang,
         ttsModel: body.ttsModel,
         llmModel: body.llmModel,
         forwardPhoneNumber: body.forwardPhoneNumber,
+        clientTools: updateClientTools,
+        supportedLanguages: updatedSupportedLangs,
         voiceStability: body.voiceStability,
         voiceSimilarity: body.voiceSimilarity,
         voiceSpeed: body.voiceSpeed,
@@ -547,6 +553,7 @@ agentRoutes.patch('/:id', zValidator('json', updateAgentSchema), async (c) => {
         ...(body.widgetButtonText ? { widgetButtonText: body.widgetButtonText } : {}),
         ...(body.widgetIconType ? { widgetIconType: body.widgetIconType } : {}),
         ...(body.widgetAllowedOrigins !== undefined ? { widgetAllowedOrigins: body.widgetAllowedOrigins } : {}),
+        tools: updateClientTools,
         updatedAt: new Date(),
       })
       .where(eq(agents.id, agentId))

@@ -127,6 +127,46 @@ widgetRoutes.post('/:agentId/record', async (c) => {
   }
 });
 
+// ── POST /widget/:agentId/tool-call ──────────────────────────────
+// Public proxy for client tool calls from embedded widgets.
+// Third-party sites can't call /webhooks/elevenlabs/server-tool directly
+// due to CORS, so this endpoint proxies the tool call with CORS *.
+widgetRoutes.post('/:agentId/tool-call', async (c) => {
+  const agentId = c.req.param('agentId');
+
+  try {
+    const body = await c.req.json<{ tool_name: string; parameters: Record<string, unknown> }>();
+    if (!body.tool_name) {
+      return c.json({ error: true, message: 'Missing tool_name' }, 400);
+    }
+
+    const agent = await db.query.agents.findFirst({
+      where: eq(agents.id, agentId),
+    });
+
+    if (!agent || !agent.widgetEnabled || !agent.elevenlabsAgentId) {
+      return c.json({ error: true, message: 'Agent not available' }, 404);
+    }
+
+    // Forward to the server-tool handler via internal fetch
+    const internalResponse = await fetch(`http://localhost:${env.PORT || 3001}/webhooks/elevenlabs/server-tool`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tool_name: body.tool_name,
+        agent_id: agent.elevenlabsAgentId,
+        parameters: body.parameters || {},
+      }),
+    });
+
+    const result = await internalResponse.json();
+    return c.json(result);
+  } catch (error) {
+    log.error({ error, agentId }, 'Widget tool-call error');
+    return c.json({ error: true, message: 'Tool call failed' }, 500);
+  }
+});
+
 // ── GET /widget/embed.js ─────────────────────────────────────────
 // Serves the embeddable JavaScript widget
 widgetRoutes.get('/embed.js', (c) => {
@@ -341,6 +381,33 @@ function generateWidgetScript(apiBaseUrl: string): string {
       body.innerHTML = '';
       var convai = document.createElement('elevenlabs-convai');
       convai.setAttribute('agent-id', cfg.elevenlabsAgentId);
+
+      // Register client tool handlers — the browser handles tool calls
+      // and forwards them to our API via the /widget/:agentId/tool-call proxy endpoint
+      function makeToolHandler(toolName) {
+        return async function(params) {
+          try {
+            var resp = await fetch(API_URL + '/widget/' + encodeURIComponent(AGENT_ID) + '/tool-call', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ tool_name: toolName, parameters: params || {} })
+            });
+            var data = await resp.json();
+            return typeof data === 'string' ? data : JSON.stringify(data);
+          } catch(e) {
+            console.error('[VoiceForge] Tool call failed:', toolName, e);
+            return JSON.stringify({ error: true, message: 'Tool call failed' });
+          }
+        };
+      }
+      convai.clientTools = {
+        check_availability: makeToolHandler('check_availability'),
+        book_appointment: makeToolHandler('book_appointment'),
+        get_current_datetime: makeToolHandler('get_current_datetime'),
+        get_caller_history: makeToolHandler('get_caller_history'),
+        get_business_hours: makeToolHandler('get_business_hours')
+      };
+
       body.appendChild(convai);
     });
   }

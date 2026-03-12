@@ -71,6 +71,12 @@ export interface CreateAgentParams {
     method: string;
     parameters?: Record<string, unknown>;
   }>;
+  /** Client tools (handled by browser, not server) */
+  clientTools?: Array<{
+    name: string;
+    description: string;
+    parameters?: Record<string, unknown>;
+  }>;
   /** Business owner's real phone — when set, adds transfer_to_number system tool */
   forwardPhoneNumber?: string;
   /** Languages this agent supports — used for language detection + consistency */
@@ -189,6 +195,20 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
             requestBodySchema: wt.parameters,
           } : {}),
         },
+      });
+    }
+  }
+
+  // Add client tools (handled by browser SDK, not server webhook)
+  if (params.clientTools) {
+    for (const ct of params.clientTools) {
+      tools.push({
+        type: 'client',
+        name: ct.name,
+        description: ct.description,
+        expectsResponse: true,
+        responseTimeoutSecs: 20,
+        ...(ct.parameters ? { parameters: ct.parameters } : {}),
       });
     }
   }
@@ -337,8 +357,8 @@ export async function updateAgent(
     promptConfig.rag = { enabled: true, max_vector_distance: 0.95, max_documents_length: 50000 };
   }
 
-  // Build tools array for transfer targets, forward phone, and webhook tools
-  if (updates.transferTargets !== undefined || updates.forwardPhoneNumber !== undefined || updates.webhookTools) {
+  // Build tools array for transfer targets, forward phone, webhook and client tools
+  if (updates.transferTargets !== undefined || updates.forwardPhoneNumber !== undefined || updates.webhookTools || updates.clientTools) {
     const tools: Array<Record<string, unknown>> = [];
 
     // Always include base system tools
@@ -408,6 +428,20 @@ export async function updateAgent(
             method: wt.method?.toUpperCase() ?? 'POST',
             ...(wt.parameters ? { requestBodySchema: wt.parameters } : {}),
           },
+        });
+      }
+    }
+
+    // Add client tools (handled by browser SDK, not server webhook)
+    if (updates.clientTools) {
+      for (const ct of updates.clientTools) {
+        tools.push({
+          type: 'client',
+          name: ct.name,
+          description: ct.description,
+          expectsResponse: true,
+          responseTimeoutSecs: 20,
+          ...(ct.parameters ? { parameters: ct.parameters } : {}),
         });
       }
     }

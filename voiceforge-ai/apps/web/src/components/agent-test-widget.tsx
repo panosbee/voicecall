@@ -1,17 +1,19 @@
 // ═══════════════════════════════════════════════════════════════════
 // VoiceForge AI — Agent Test Widget (ElevenLabs Conversational AI)
-// Embeds the ElevenLabs widget to test agents via browser microphone
+// Uses @elevenlabs/client SDK with clientTools for calendar/tools
 // Records the real conversation transcript on close
 // ═══════════════════════════════════════════════════════════════════
 
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { X, Mic, Phone, AlertCircle, Loader2 } from 'lucide-react';
+import { X, Mic, MicOff, Phone, PhoneOff, AlertCircle, Loader2, Volume2 } from 'lucide-react';
 import { Button, Spinner } from '@/components/ui';
 import { useI18n } from '@/lib/i18n';
 import { api } from '@/lib/api-client';
+import { API_URL } from '@/lib/env';
 import { toast } from 'sonner';
+import { Conversation } from '@elevenlabs/client';
 import type { ApiResponse } from '@voiceforge/shared';
 
 interface AgentTestWidgetProps {
@@ -20,46 +22,43 @@ interface AgentTestWidgetProps {
   onClose: () => void;
 }
 
-const WIDGET_SCRIPT_URL = 'https://elevenlabs.io/convai-widget/index.js';
+type SessionStatus = 'idle' | 'connecting' | 'connected' | 'disconnected';
+type AgentMode = 'listening' | 'speaking';
+
+/**
+ * Call the server-tool endpoint from the browser.
+ * This replaces the old webhook approach — works with localhost.
+ */
+async function callServerTool(
+  toolName: string,
+  agentId: string,
+  parameters: Record<string, unknown>,
+): Promise<string> {
+  const res = await fetch(`${API_URL}/webhooks/elevenlabs/server-tool`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tool_name: toolName,
+      agent_id: agentId,
+      parameters,
+    }),
+  });
+  const data = await res.json();
+  return typeof data === 'string' ? data : JSON.stringify(data);
+}
 
 export function AgentTestWidget({ agentId, agentName, onClose }: AgentTestWidgetProps) {
   const { t } = useI18n();
-  const [isScriptLoaded, setIsScriptLoaded] = useState(false);
-  const [scriptError, setScriptError] = useState(false);
+  const [status, setStatus] = useState<SessionStatus>('idle');
+  const [agentMode, setAgentMode] = useState<AgentMode>('listening');
+  const [isMuted, setIsMuted] = useState(false);
   const [micPermission, setMicPermission] = useState<'pending' | 'granted' | 'denied'>('pending');
   const [isRecording, setIsRecording] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const widgetContainerRef = useRef<HTMLDivElement>(null);
-  const widgetMountedRef = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const conversationRef = useRef<Awaited<ReturnType<typeof Conversation.startSession>> | null>(null);
 
-  // Load the ElevenLabs widget script
-  useEffect(() => {
-    const existingScript = document.querySelector(`script[src="${WIDGET_SCRIPT_URL}"]`);
-
-    if (existingScript) {
-      setIsScriptLoaded(true);
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.src = WIDGET_SCRIPT_URL;
-    script.async = true;
-    script.type = 'text/javascript';
-
-    script.onload = () => {
-      setIsScriptLoaded(true);
-    };
-
-    script.onerror = () => {
-      setScriptError(true);
-    };
-
-    document.head.appendChild(script);
-  }, []);
-
-  // Enhance browser audio constraints BEFORE the ElevenLabs widget captures the mic.
+  // Enhance browser audio constraints BEFORE the SDK captures the mic.
   // Forces noise suppression, echo cancellation, and auto gain control.
-  // This is especially important when testing via speakers (not headphones).
   useEffect(() => {
     const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getUserMedia = async (constraints) => {
@@ -74,61 +73,111 @@ export function AgentTestWidget({ agentId, agentName, onClose }: AgentTestWidget
     return () => { navigator.mediaDevices.getUserMedia = original; };
   }, []);
 
-  // Mount the custom element imperatively when script is loaded.
-  // Small delay avoids "signal is aborted" error caused by React Strict Mode
-  // double-mount cycle aborting the first fetch before the widget initializes.
-  useEffect(() => {
-    if (!isScriptLoaded || scriptError || !widgetContainerRef.current) return;
-
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      if (cancelled || !widgetContainerRef.current) return;
-      const el = document.createElement('elevenlabs-convai');
-      el.setAttribute('agent-id', agentId);
-      widgetContainerRef.current.innerHTML = '';
-      widgetContainerRef.current.appendChild(el);
-      widgetMountedRef.current = true;
-    }, 50);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      if (widgetContainerRef.current) {
-        widgetContainerRef.current.innerHTML = '';
-      }
-    };
-  }, [isScriptLoaded, scriptError, agentId]);
-
   // Check microphone permission
   useEffect(() => {
     const checkMic = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Immediately stop tracks — we just wanted permission
         stream.getTracks().forEach((t) => t.stop());
         setMicPermission('granted');
       } catch {
         setMicPermission('denied');
       }
     };
-
     checkMic();
   }, []);
 
-  // Record the conversation when widget closes.
-  // The backend handles internal polling (up to ~27s) waiting for ElevenLabs
-  // to finalize the AI analysis (summary, data collection, evaluation).
-  // Frontend waits 5s for the conversation to appear, then makes one call.
-  // Two retries with 8s gaps if the first attempt returns no conversation.
-  const handleClose = useCallback(async () => {
-    if (!widgetMountedRef.current) {
-      onClose();
-      return;
+  // Start conversation session
+  const startConversation = useCallback(async () => {
+    if (conversationRef.current) return;
+
+    setStatus('connecting');
+    setError(null);
+
+    try {
+      const conversation = await Conversation.startSession({
+        agentId,
+        connectionType: 'websocket',
+        clientTools: {
+          check_availability: async (parameters: any) => {
+            return callServerTool('check_availability', agentId, parameters);
+          },
+          book_appointment: async (parameters: any) => {
+            return callServerTool('book_appointment', agentId, parameters);
+          },
+          get_current_datetime: async (parameters: any) => {
+            return callServerTool('get_current_datetime', agentId, parameters);
+          },
+          get_caller_history: async (parameters: any) => {
+            return callServerTool('get_caller_history', agentId, parameters);
+          },
+          get_business_hours: async (parameters: any) => {
+            return callServerTool('get_business_hours', agentId, parameters);
+          },
+        },
+        onConnect: ({ conversationId }) => {
+          console.info('[AgentTestWidget] Connected, conversationId:', conversationId);
+          setStatus('connected');
+        },
+        onDisconnect: () => {
+          console.info('[AgentTestWidget] Disconnected');
+          setStatus('disconnected');
+          conversationRef.current = null;
+        },
+        onError: (message: string) => {
+          console.error('[AgentTestWidget] Error:', message);
+          setError(message);
+        },
+        onModeChange: ({ mode }) => {
+          setAgentMode(mode === 'speaking' ? 'speaking' : 'listening');
+        },
+      });
+
+      conversationRef.current = conversation;
+    } catch (err) {
+      console.error('[AgentTestWidget] Failed to start session:', err);
+      setError(String(err));
+      setStatus('idle');
     }
+  }, [agentId]);
+
+  // Auto-start conversation when mic permission is granted
+  useEffect(() => {
+    if (micPermission === 'granted' && status === 'idle') {
+      startConversation();
+    }
+  }, [micPermission, status, startConversation]);
+
+  // Toggle mute
+  const toggleMute = useCallback(() => {
+    if (conversationRef.current) {
+      const newMuted = !isMuted;
+      conversationRef.current.setMicMuted(newMuted);
+      setIsMuted(newMuted);
+    }
+  }, [isMuted]);
+
+  // End conversation
+  const endConversation = useCallback(async () => {
+    if (conversationRef.current) {
+      try {
+        await conversationRef.current.endSession();
+      } catch (err) {
+        console.warn('[AgentTestWidget] Error ending session:', err);
+      }
+      conversationRef.current = null;
+    }
+    setStatus('disconnected');
+  }, []);
+
+  // Record conversation & close
+  const handleClose = useCallback(async () => {
+    // End the conversation first
+    await endConversation();
 
     setIsRecording(true);
 
-    // Initial delay: let ElevenLabs register the conversation
+    // Wait for ElevenLabs to register the conversation
     await new Promise((r) => setTimeout(r, 5000));
 
     let recorded = false;
@@ -162,8 +211,6 @@ export function AgentTestWidget({ agentId, agentName, onClose }: AgentTestWidget
             }
           }
         }
-
-        // Any other response on last attempt — give up
         break;
       } catch (err) {
         console.warn(`[AgentTestWidget] Record attempt ${attempt + 1} failed:`, err);
@@ -184,7 +231,17 @@ export function AgentTestWidget({ agentId, agentName, onClose }: AgentTestWidget
 
     setIsRecording(false);
     onClose();
-  }, [agentId, onClose, t]);
+  }, [agentId, endConversation, onClose, t]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (conversationRef.current) {
+        conversationRef.current.endSession().catch(() => {});
+        conversationRef.current = null;
+      }
+    };
+  }, []);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
@@ -214,7 +271,7 @@ export function AgentTestWidget({ agentId, agentName, onClose }: AgentTestWidget
         </div>
 
         {/* Body */}
-        <div className="p-6" ref={containerRef}>
+        <div className="p-6">
           {/* Recording in progress */}
           {isRecording && (
             <div className="flex flex-col items-center justify-center py-8 gap-3">
@@ -238,52 +295,93 @@ export function AgentTestWidget({ agentId, agentName, onClose }: AgentTestWidget
             </div>
           )}
 
-          {/* Script loading */}
-          {!isRecording && !isScriptLoaded && !scriptError && (
+          {/* Error state */}
+          {!isRecording && error && (
+            <div className="flex flex-col items-center justify-center py-8 gap-3 text-center">
+              <AlertCircle className="w-10 h-10 text-danger-400" />
+              <p className="text-sm text-danger-600 font-medium">
+                {t.testWidget.widgetLoadError}
+              </p>
+              <p className="text-xs text-text-tertiary max-w-xs">{error}</p>
+              <Button variant="outline" size="sm" onClick={startConversation}>
+                {t.common.refresh}
+              </Button>
+            </div>
+          )}
+
+          {/* Connecting */}
+          {!isRecording && !error && status === 'connecting' && (
             <div className="flex flex-col items-center justify-center py-12 gap-3">
               <Spinner size="lg" />
               <p className="text-sm text-text-tertiary">{t.testWidget.loadingWidget}</p>
             </div>
           )}
 
-          {/* Script error */}
-          {!isRecording && scriptError && (
-            <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
-              <AlertCircle className="w-10 h-10 text-danger-400" />
-              <p className="text-sm text-danger-600 font-medium">
-                {t.testWidget.widgetLoadError}
-              </p>
-              <p className="text-xs text-text-tertiary max-w-xs">
-                {t.testWidget.widgetLoadErrorDescription}
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => window.location.reload()}
-              >
-                {t.common.refresh}
-              </Button>
+          {/* Mic permission pending */}
+          {!isRecording && !error && status === 'idle' && micPermission === 'pending' && (
+            <div className="flex flex-col items-center justify-center py-12 gap-3">
+              <Spinner size="lg" />
+              <p className="text-sm text-text-tertiary">{t.testWidget.loadingWidget}</p>
             </div>
           )}
 
-          {/* ElevenLabs widget */}
-          {!isRecording && isScriptLoaded && !scriptError && (
-            <div className="flex flex-col items-center gap-4">
+          {/* Connected — active conversation */}
+          {!isRecording && !error && status === 'connected' && (
+            <div className="flex flex-col items-center gap-6 py-4">
+              {/* Status indicator */}
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-green-50 text-green-700 text-xs font-medium">
-                <Mic className="w-3.5 h-3.5" />
+                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
                 <span>{t.testWidget.widgetActive}</span>
               </div>
 
-              {/* The actual ElevenLabs widget (mounted imperatively) */}
-              <div
-                ref={widgetContainerRef}
-                className="w-full min-h-[120px] flex items-center justify-center"
-              />
+              {/* Agent mode visualization */}
+              <div className="relative flex items-center justify-center w-24 h-24">
+                <div className={`absolute inset-0 rounded-full transition-all duration-500 ${
+                  agentMode === 'speaking'
+                    ? 'bg-brand-100 scale-110 animate-pulse'
+                    : 'bg-surface-secondary scale-100'
+                }`} />
+                <div className="relative z-10">
+                  {agentMode === 'speaking' ? (
+                    <Volume2 className="w-10 h-10 text-brand-600" />
+                  ) : (
+                    <Mic className="w-10 h-10 text-green-600" />
+                  )}
+                </div>
+              </div>
 
-              <p className="text-xs text-text-tertiary text-center max-w-sm">
-                {t.testWidget.pressButton}
-                {' '}{t.testWidget.voiceResponse}
+              <p className="text-sm text-text-secondary font-medium">
+                {agentMode === 'speaking' ? t.testWidget.voiceResponse : t.testWidget.pressButton}
               </p>
+
+              {/* Controls */}
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={toggleMute}
+                  className={isMuted ? 'text-danger-500 border-danger-300' : ''}
+                >
+                  {isMuted ? <MicOff className="w-4 h-4 mr-1.5" /> : <Mic className="w-4 h-4 mr-1.5" />}
+                  {isMuted ? 'Muted' : 'Mute'}
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={handleClose}
+                >
+                  <PhoneOff className="w-4 h-4 mr-1.5" />
+                  {t.common.close}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Disconnected */}
+          {!isRecording && !error && status === 'disconnected' && (
+            <div className="flex flex-col items-center justify-center py-8 gap-3">
+              <PhoneOff className="w-10 h-10 text-text-tertiary" />
+              <p className="text-sm text-text-secondary">{t.testWidget.savingConversation}</p>
             </div>
           )}
         </div>
