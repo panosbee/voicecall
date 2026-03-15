@@ -24,7 +24,7 @@ const log = createLogger('agents');
  * Client tools are executed by the browser via @elevenlabs/client SDK —
  * the browser calls our API directly (works with localhost, no public URL needed).
  */
-function buildClientToolDefs(language: string) {
+export function buildClientToolDefs(language: string) {
   const isEn = language === 'en';
   return [
     {

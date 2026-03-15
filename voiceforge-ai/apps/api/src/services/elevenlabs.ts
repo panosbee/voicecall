@@ -214,10 +214,11 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
   }
 
   // Build knowledge base config — prefer knowledgeBaseDocs (has name), fallback to knowledgeBaseDocIds
-  // usage_mode: 'prompt' = content always included in LLM context (not just vector search)
+  // usageMode: 'prompt' = content always included in LLM context (not just vector search)
+  // NOTE: Fern SDK expects camelCase keys; snake_case keys are silently STRIPPED
   const knowledgeBase = params.knowledgeBaseDocs
-    ? params.knowledgeBaseDocs.map((doc) => ({ type: 'file' as const, id: doc.id, name: doc.name, usage_mode: 'prompt' as const }))
-    : (params.knowledgeBaseDocIds ?? []).map((docId) => ({ type: 'file' as const, id: docId, name: docId, usage_mode: 'prompt' as const }));
+    ? params.knowledgeBaseDocs.map((doc) => ({ type: 'file' as const, id: doc.id, name: doc.name, usageMode: 'prompt' as const }))
+    : (params.knowledgeBaseDocIds ?? []).map((docId) => ({ type: 'file' as const, id: docId, name: docId, usageMode: 'prompt' as const }));
 
   try {
     const ttsModelId = params.ttsModel || env.ELEVENLABS_MODEL_ID || 'eleven_v3_conversational';
@@ -235,8 +236,8 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
                   knowledgeBase,
                   rag: {
                     enabled: true,
-                    max_vector_distance: 0.95,
-                    max_documents_length: 50000,
+                    maxVectorDistance: 0.95,
+                    maxDocumentsLength: 50000,
                   },
                 }
               : {}),
@@ -350,11 +351,11 @@ export async function updateAgent(
 
   if (updates.instructions) promptConfig.prompt = resolveDynamicVariables(updates.instructions, dynamicVars);
   if (updates.knowledgeBaseDocs) {
-    promptConfig.knowledgeBase = updates.knowledgeBaseDocs.map((doc) => ({ type: 'file', id: doc.id, name: doc.name, usage_mode: 'prompt' }));
-    promptConfig.rag = { enabled: true, max_vector_distance: 0.95, max_documents_length: 50000 };
+    promptConfig.knowledgeBase = updates.knowledgeBaseDocs.map((doc) => ({ type: 'file', id: doc.id, name: doc.name, usageMode: 'prompt' }));
+    promptConfig.rag = { enabled: true, maxVectorDistance: 0.95, maxDocumentsLength: 50000 };
   } else if (updates.knowledgeBaseDocIds) {
-    promptConfig.knowledgeBase = updates.knowledgeBaseDocIds.map((id) => ({ type: 'file', id, name: id, usage_mode: 'prompt' }));
-    promptConfig.rag = { enabled: true, max_vector_distance: 0.95, max_documents_length: 50000 };
+    promptConfig.knowledgeBase = updates.knowledgeBaseDocIds.map((id) => ({ type: 'file', id, name: id, usageMode: 'prompt' }));
+    promptConfig.rag = { enabled: true, maxVectorDistance: 0.95, maxDocumentsLength: 50000 };
   }
 
   // Build tools array for transfer targets, forward phone, webhook and client tools
@@ -702,14 +703,18 @@ export async function deleteKBDocument(documentId: string): Promise<void> {
 
 /**
  * Attach KB documents to an agent (enables RAG).
+ * Pass additionalParams (instructions, clientTools, language, etc.) to avoid
+ * ElevenLabs PATCH replacing the entire prompt object and wiping other config.
  */
 export async function attachKBToAgent(
   agentId: string,
   docs: Array<{ id: string; name: string }>,
+  additionalParams?: Partial<CreateAgentParams>,
 ): Promise<void> {
   log.info({ agentId, docCount: docs.length }, 'Attaching KB to agent');
 
   await updateAgent(agentId, {
+    ...additionalParams,
     knowledgeBaseDocs: docs,
   });
 

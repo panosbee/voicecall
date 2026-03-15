@@ -13,6 +13,8 @@ import { knowledgeBaseDocuments, agents, customers } from '../db/schema/index.js
 import { authMiddleware, type AuthUser } from '../middleware/auth.js';
 import { createLogger } from '../config/logger.js';
 import * as elevenlabsService from '../services/elevenlabs.js';
+import { buildEnhancedInstructions } from '../services/prompt-builder.js';
+import { buildClientToolDefs } from './agents.js';
 import type { ApiResponse } from '@voiceforge/shared';
 
 const log = createLogger('knowledge-base');
@@ -48,6 +50,33 @@ async function getCustomerByUserId(userId: string) {
 /** Check if we're in dev bypass mode */
 function isDevBypass(): boolean {
   return !elevenlabsService.isConfigured();
+}
+
+/**
+ * Build partial agent params from a DB agent record + customer so that KB
+ * attachment calls include instructions/tools/language — preventing the
+ * ElevenLabs PATCH from wiping the prompt object.
+ */
+async function buildAgentContextForKB(
+  agent: { instructions: string | null; language: unknown; supportedLanguages: unknown; forwardPhoneNumber: string | null },
+  customer: { timezone: string | null; locale: string | null },
+) {
+  const lang = (agent.language as string) || 'el';
+  const supportedLangs: string[] = (agent.supportedLanguages as string[]) ?? ['el'];
+  const instructions = buildEnhancedInstructions({
+    rawInstructions: agent.instructions || '',
+    language: lang,
+    supportedLanguages: supportedLangs,
+    customerTimezone: customer.timezone || 'Europe/Athens',
+    customerLocale: customer.locale?.startsWith('en') ? 'en' : 'el',
+  });
+  return {
+    instructions,
+    language: lang,
+    supportedLanguages: supportedLangs,
+    clientTools: buildClientToolDefs(lang),
+    forwardPhoneNumber: agent.forwardPhoneNumber || undefined,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -145,7 +174,8 @@ knowledgeBaseRoutes.post('/upload-file', async (c) => {
       const docIds = agentDocs.map((d) => ({ id: d.elevenlabsDocId, name: d.name }));
       const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
       if (agent?.elevenlabsAgentId) {
-        await elevenlabsService.attachKBToAgent(agent.elevenlabsAgentId, docIds);
+        const agentCtx = await buildAgentContextForKB(agent, customer);
+        await elevenlabsService.attachKBToAgent(agent.elevenlabsAgentId, docIds, agentCtx);
       }
     }
 
@@ -236,7 +266,8 @@ knowledgeBaseRoutes.post('/upload-url', zValidator('json', uploadUrlSchema), asy
       const docIds = agentDocs.map((d) => ({ id: d.elevenlabsDocId, name: d.name }));
       const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
       if (agent?.elevenlabsAgentId) {
-        await elevenlabsService.attachKBToAgent(agent.elevenlabsAgentId, docIds);
+        const agentCtx = await buildAgentContextForKB(agent, customer);
+        await elevenlabsService.attachKBToAgent(agent.elevenlabsAgentId, docIds, agentCtx);
       }
     }
 
@@ -326,7 +357,8 @@ knowledgeBaseRoutes.post('/upload-text', zValidator('json', uploadTextSchema), a
       const docIds = agentDocs.map((d) => ({ id: d.elevenlabsDocId, name: d.name }));
       const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
       if (agent?.elevenlabsAgentId) {
-        await elevenlabsService.attachKBToAgent(agent.elevenlabsAgentId, docIds);
+        const agentCtx = await buildAgentContextForKB(agent, customer);
+        await elevenlabsService.attachKBToAgent(agent.elevenlabsAgentId, docIds, agentCtx);
       }
     }
 
@@ -442,9 +474,11 @@ knowledgeBaseRoutes.delete('/:id', async (c) => {
       });
       const agent = await db.query.agents.findFirst({ where: eq(agents.id, doc.agentId) });
       if (agent?.elevenlabsAgentId) {
+        const agentCtx = await buildAgentContextForKB(agent, customer);
         await elevenlabsService.attachKBToAgent(
           agent.elevenlabsAgentId,
           remainingDocs.map((d) => ({ id: d.elevenlabsDocId, name: d.name })),
+          agentCtx,
         );
       }
     }
@@ -517,9 +551,11 @@ knowledgeBaseRoutes.post('/:id/attach', zValidator('json', attachSchema), async 
     });
     const oldAgent = await db.query.agents.findFirst({ where: eq(agents.id, oldAgentId) });
     if (oldAgent?.elevenlabsAgentId) {
+      const oldAgentCtx = await buildAgentContextForKB(oldAgent, customer);
       await elevenlabsService.attachKBToAgent(
         oldAgent.elevenlabsAgentId,
         oldAgentDocs.map((d) => ({ id: d.elevenlabsDocId, name: d.name })),
+        oldAgentCtx,
       );
     }
   }
@@ -534,9 +570,11 @@ knowledgeBaseRoutes.post('/:id/attach', zValidator('json', attachSchema), async 
     });
     const newAgent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
     if (newAgent?.elevenlabsAgentId) {
+      const newAgentCtx = await buildAgentContextForKB(newAgent, customer);
       await elevenlabsService.attachKBToAgent(
         newAgent.elevenlabsAgentId,
         newAgentDocs.map((d) => ({ id: d.elevenlabsDocId, name: d.name })),
+        newAgentCtx,
       );
     }
   }
@@ -590,9 +628,13 @@ knowledgeBaseRoutes.post('/resync/:agentId', async (c) => {
   }
 
   try {
+    // Include full agent context to prevent ElevenLabs PATCH from wiping prompt/tools
+    const agentCtx = await buildAgentContextForKB(agent, customer);
+
     await elevenlabsService.attachKBToAgent(
       agent.elevenlabsAgentId,
       agentDocs.map((d) => ({ id: d.elevenlabsDocId, name: d.name })),
+      agentCtx,
     );
 
     log.info({ agentId, elevenlabsAgentId: agent.elevenlabsAgentId, docCount: agentDocs.length }, 'KB force re-synced');
