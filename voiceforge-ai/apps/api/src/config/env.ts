@@ -36,12 +36,20 @@ const envSchema = z.object({
   // Redis (production: distributed rate limiting, sessions, caching)
   REDIS_URL: z.string().url().optional(),
 
+  // Telephony Provider Selection (telnyx | twilio)
+  TELEPHONY_PROVIDER: z.enum(['telnyx', 'twilio']).default('telnyx'),
+
   // Telnyx (Phone Numbers + SMS — SIP trunk to ElevenLabs)
   TELNYX_API_KEY: z.string().default('dev-placeholder'),
   TELNYX_PUBLIC_KEY: z.string().default(''),
   TELNYX_WEBHOOK_SECRET: z.string().default(''),
   TELNYX_MESSAGING_PROFILE_ID: z.string().default(''),
   TELNYX_SMS_FROM_NUMBER: z.string().default(''),  // +30 number to send SMS from
+
+  // Twilio (Alternative carrier — native ElevenLabs integration)
+  TWILIO_ACCOUNT_SID: z.string().default(''),
+  TWILIO_AUTH_TOKEN: z.string().default(''),
+  TWILIO_SMS_FROM_NUMBER: z.string().default(''),
 
   // ElevenLabs (Primary AI Platform)
   ELEVENLABS_API_KEY: z.string().default('dev-placeholder'),
@@ -109,8 +117,12 @@ function loadEnv() {
   if (data.NODE_ENV === 'production') {
     const errors: string[] = [];
 
-    if (data.TELNYX_API_KEY === 'dev-placeholder' || !data.TELNYX_API_KEY) {
-      errors.push('TELNYX_API_KEY must be set in production');
+    // Telephony provider validation: only require keys for the active provider
+    if (data.TELEPHONY_PROVIDER === 'telnyx' && (data.TELNYX_API_KEY === 'dev-placeholder' || !data.TELNYX_API_KEY)) {
+      errors.push('TELNYX_API_KEY must be set in production when using Telnyx provider');
+    }
+    if (data.TELEPHONY_PROVIDER === 'twilio' && (!data.TWILIO_ACCOUNT_SID || !data.TWILIO_AUTH_TOKEN)) {
+      errors.push('TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set when using Twilio provider');
     }
     if (data.ELEVENLABS_API_KEY === 'dev-placeholder' || !data.ELEVENLABS_API_KEY) {
       errors.push('ELEVENLABS_API_KEY must be set in production');
@@ -124,8 +136,8 @@ function loadEnv() {
     if (!data.SUPABASE_JWT_SECRET) {
       errors.push('SUPABASE_JWT_SECRET is required in production for local JWT verification');
     }
-    if (!data.TELNYX_PUBLIC_KEY) {
-      errors.push('TELNYX_PUBLIC_KEY is required for webhook signature verification');
+    if (data.TELEPHONY_PROVIDER === 'telnyx' && !data.TELNYX_PUBLIC_KEY) {
+      errors.push('TELNYX_PUBLIC_KEY is required for webhook signature verification when using Telnyx');
     }
     if (data.API_BASE_URL.includes('localhost')) {
       errors.push('API_BASE_URL must not contain localhost in production');

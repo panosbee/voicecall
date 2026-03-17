@@ -11,7 +11,7 @@ import { agents, calls, webhookEvents, appointments, customers, callerMemories }
 import { createLogger } from '../config/logger.js';
 import * as elevenlabsService from '../services/elevenlabs.js';
 import { sendCallSummaryEmail, isEmailConfigured } from '../services/email.js';
-import { sendCallSummarySms, isSmsConfigured } from '../services/telnyx.js';
+import { getTelephonyProvider } from '../services/telephony/index.js';
 import { parseDateTimeInTimezone } from '../services/timezone.js';
 import { extractAppointmentFromTranscript } from '../services/transcript-parser.js';
 
@@ -295,9 +295,10 @@ elevenlabsWebhookRoutes.post('/post-conversation', async (c) => {
     }
 
     // ── SMS Notification ────────────────────────────────────────
-    if (isSmsConfigured() && customer?.phone && callRecord) {
+    const smsProvider = getTelephonyProvider();
+    if (smsProvider.isSmsConfigured() && customer?.phone && callRecord) {
       try {
-        await sendCallSummarySms({
+        await smsProvider.sendCallSummarySms({
           to: customer.phone,
           callerPhone: callerNumber,
           agentName: agent.name,

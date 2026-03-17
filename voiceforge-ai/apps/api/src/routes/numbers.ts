@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // VoiceForge AI — Phone Numbers Routes
-// Search available Greek numbers + purchase via Telnyx master key
-// Numbers connect to ElevenLabs agents via SIP trunk
+// Search available Greek numbers + purchase via telephony provider
+// Numbers connect to ElevenLabs agents via SIP trunk or native
 // ═══════════════════════════════════════════════════════════════════
 
 import { Hono } from 'hono';
@@ -12,7 +12,7 @@ import { db } from '../db/connection.js';
 import { customers, agents } from '../db/schema/index.js';
 import { authMiddleware, type AuthUser } from '../middleware/auth.js';
 import { createLogger } from '../config/logger.js';
-import * as telnyxService from '../services/telnyx.js';
+import { getTelephonyProvider } from '../services/telephony/index.js';
 import * as elevenlabsService from '../services/elevenlabs.js';
 import type { ApiResponse } from '@voiceforge/shared';
 
@@ -42,16 +42,17 @@ const purchaseNumberSchema = z.object({
 
 numberRoutes.get('/available', zValidator('query', searchNumbersSchema), async (c) => {
   const query = c.req.valid('query');
+  const provider = getTelephonyProvider();
 
-  if (!telnyxService.isTelnyxConfigured()) {
+  if (!provider.isConfigured()) {
     return c.json<ApiResponse>(
-      { success: false, error: { code: 'VALIDATION_ERROR', message: 'Telnyx δεν είναι ρυθμισμένο. Επικοινωνήστε με τον διαχειριστή.' } },
+      { success: false, error: { code: 'VALIDATION_ERROR', message: 'Τηλεφωνία δεν είναι ρυθμισμένη. Επικοινωνήστε με τον διαχειριστή.' } },
       400,
     );
   }
 
   try {
-    const numbers = await telnyxService.searchAvailableNumbersMaster({
+    const numbers = await provider.searchAvailableNumbers({
       locality: query.locality,
       areaCode: query.areaCode,
       limit: query.limit,
@@ -59,9 +60,9 @@ numberRoutes.get('/available', zValidator('query', searchNumbersSchema), async (
 
     return c.json<ApiResponse>({ success: true, data: numbers });
   } catch (error) {
-    log.error({ error }, 'Failed to search available numbers');
+    log.error({ error, provider: provider.name }, 'Failed to search available numbers');
     return c.json<ApiResponse>(
-      { success: false, error: { code: 'TELNYX_ERROR', message: 'Failed to search phone numbers' } },
+      { success: false, error: { code: 'TELEPHONY_ERROR', message: 'Failed to search phone numbers' } },
       500,
     );
   }
@@ -75,10 +76,11 @@ numberRoutes.get('/available', zValidator('query', searchNumbersSchema), async (
 numberRoutes.post('/purchase', zValidator('json', purchaseNumberSchema), async (c) => {
   const user = c.get('user');
   const { phoneNumber, agentId } = c.req.valid('json');
+  const provider = getTelephonyProvider();
 
-  if (!telnyxService.isTelnyxConfigured()) {
+  if (!provider.isConfigured()) {
     return c.json<ApiResponse>(
-      { success: false, error: { code: 'VALIDATION_ERROR', message: 'Telnyx δεν είναι ρυθμισμένο' } },
+      { success: false, error: { code: 'VALIDATION_ERROR', message: 'Τηλεφωνία δεν είναι ρυθμισμένη' } },
       400,
     );
   }
@@ -101,51 +103,54 @@ numberRoutes.post('/purchase', zValidator('json', purchaseNumberSchema), async (
   }
 
   try {
-    log.info({ phoneNumber, agentId, customerId: customer.id }, 'Purchasing phone number + SIP wiring');
+    log.info({ phoneNumber, agentId, customerId: customer.id, provider: provider.name }, 'Purchasing phone number + setup');
 
-    // ── Step 1: Purchase the phone number via Telnyx ─────────
-    const order = await telnyxService.purchasePhoneNumberMaster(phoneNumber);
-    log.info({ orderId: order.orderId, status: order.status }, 'Telnyx number purchased');
+    // ── Step 1: Purchase the phone number ────────────────────
+    const order = await provider.purchasePhoneNumber(phoneNumber);
+    log.info({ orderId: order.orderId, status: order.status, provider: provider.name }, 'Number purchased');
 
-    // ── Step 2: Create or reuse SIP connection → ElevenLabs ──
-    // Check if we already have a SIP connection for this customer
-    let connectionId = customer.telnyxConnectionId as string | null;
-    if (!connectionId) {
-      const sip = await telnyxService.createSipConnection(
-        `VoiceForge-${customer.businessName || customer.id}`,
-      );
-      connectionId = sip.connectionId;
+    // ── Step 2 & 3: SIP wiring (Telnyx) or skip (Twilio) ────
+    let connectionId: string | null = null;
 
-      // Save connection ID on customer for reuse
-      await db
-        .update(customers)
-        .set({ telnyxConnectionId: connectionId })
-        .where(eq(customers.id, customer.id));
+    if (provider.requiresSipWiring()) {
+      // Telnyx path: Create or reuse SIP connection → ElevenLabs
+      connectionId = customer.telnyxConnectionId as string | null;
+      if (!connectionId) {
+        const sip = await provider.createSipConnection(
+          `VoiceForge-${customer.businessName || customer.id}`,
+        );
+        connectionId = sip.connectionId;
 
-      log.info({ connectionId }, 'New SIP connection created');
-    }
+        // Save connection ID on customer for reuse
+        await db
+          .update(customers)
+          .set({ telnyxConnectionId: connectionId })
+          .where(eq(customers.id, customer.id));
 
-    // ── Step 3: Assign number to SIP connection ──────────────
-    // Small delay — Telnyx may need a moment to provision
-    await new Promise((r) => setTimeout(r, 2000));
+        log.info({ connectionId }, 'New SIP connection created');
+      }
 
-    try {
-      await telnyxService.assignNumberToSipConnection(phoneNumber, connectionId);
-      log.info({ phoneNumber, connectionId }, 'Number assigned to SIP connection');
-    } catch (sipErr) {
-      log.warn({ error: sipErr, phoneNumber }, 'SIP assignment failed — number may still be provisioning. Will retry.');
-      // Don't fail the whole operation — number is purchased, SIP can be retried
+      // Small delay — carrier may need a moment to provision
+      await new Promise((r) => setTimeout(r, 2000));
+
+      try {
+        await provider.assignNumberToSipConnection(phoneNumber, connectionId);
+        log.info({ phoneNumber, connectionId }, 'Number assigned to SIP connection');
+      } catch (sipErr) {
+        log.warn({ error: sipErr, phoneNumber }, 'SIP assignment failed — number may still be provisioning. Will retry.');
+      }
     }
 
     // ── Step 4: Import number into ElevenLabs ────────────────
     let elevenlabsPhoneNumberId: string | null = null;
     if (agent.elevenlabsAgentId) {
       try {
+        const terminationUri = provider.getTerminationUri();
         const elResult = await elevenlabsService.importPhoneNumber({
           phoneNumber,
           agentId: agent.elevenlabsAgentId,
           label: `${agent.name} — ${phoneNumber}`,
-          terminationUri: 'sip.telnyx.com',
+          ...(terminationUri ? { terminationUri } : {}),
         });
         elevenlabsPhoneNumberId = elResult.phoneNumberId;
         log.info({ elevenlabsPhoneNumberId, agentId: agent.elevenlabsAgentId }, 'Phone number imported to ElevenLabs');
@@ -160,14 +165,14 @@ numberRoutes.post('/purchase', zValidator('json', purchaseNumberSchema), async (
       .set({
         phoneNumber,
         telnyxNumberOrderId: order.orderId,
-        telnyxConnectionId: connectionId,
+        ...(connectionId ? { telnyxConnectionId: connectionId } : {}),
         ...(elevenlabsPhoneNumberId ? { elevenlabsPhoneNumberId } : {}),
         status: elevenlabsPhoneNumberId ? 'active' : 'draft',
         updatedAt: new Date(),
       })
       .where(eq(agents.id, agentId));
 
-    log.info({ phoneNumber, agentId, orderId: order.orderId, elevenlabsPhoneNumberId }, 'Full phone setup complete');
+    log.info({ phoneNumber, agentId, orderId: order.orderId, elevenlabsPhoneNumberId, provider: provider.name }, 'Full phone setup complete');
 
     return c.json<ApiResponse>({
       success: true,
@@ -180,15 +185,16 @@ numberRoutes.post('/purchase', zValidator('json', purchaseNumberSchema), async (
         elevenlabsPhoneNumberId,
         sipConfigured: !!connectionId,
         elevenlabsConfigured: !!elevenlabsPhoneNumberId,
+        provider: provider.name,
         note: elevenlabsPhoneNumberId
           ? 'Ο αριθμός συνδέθηκε με τον AI βοηθό! Δοκιμάστε να τον καλέσετε.'
-          : 'Ο αριθμός αγοράστηκε. Η σύνδεση SIP θα ολοκληρωθεί σύντομα.',
+          : 'Ο αριθμός αγοράστηκε. Η σύνδεση θα ολοκληρωθεί σύντομα.',
       },
     }, 201);
   } catch (error) {
-    log.error({ error, phoneNumber }, 'Failed to purchase number');
+    log.error({ error, phoneNumber, provider: provider.name }, 'Failed to purchase number');
     return c.json<ApiResponse>(
-      { success: false, error: { code: 'TELNYX_ERROR', message: 'Failed to purchase phone number' } },
+      { success: false, error: { code: 'TELEPHONY_ERROR', message: 'Failed to purchase phone number' } },
       500,
     );
   }
