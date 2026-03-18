@@ -568,7 +568,8 @@ callRoutes.post('/record-conversation', zValidator('json', recordConversationSch
     let analysis: Record<string, any> | undefined;
     let metadata: Record<string, any> | undefined;
 
-    for (let analysisAttempt = 0; analysisAttempt < 5; analysisAttempt++) {
+    const MAX_ANALYSIS_ATTEMPTS = 8;
+    for (let analysisAttempt = 0; analysisAttempt < MAX_ANALYSIS_ATTEMPTS; analysisAttempt++) {
       full = await elevenlabsService.getConversation(conversationId) as Record<string, any>;
       transcript = full.transcript ?? [];
       analysis = full.analysis as Record<string, any> | undefined;
@@ -583,11 +584,13 @@ callRoutes.post('/record-conversation', zValidator('json', recordConversationSch
         break;
       }
 
-      if (analysisAttempt < 4) {
-        log.info({ conversationId, attempt: analysisAttempt + 1, hasTranscript, hasSummary, hasDataCollection }, '⏳ Waiting for AI analysis...');
-        await new Promise(r => setTimeout(r, 3000));
+      if (analysisAttempt < MAX_ANALYSIS_ATTEMPTS - 1) {
+        // Exponential backoff: 3s, 4s, 5s, 6s, 7s, 8s, 9s
+        const delay = 3000 + analysisAttempt * 1000;
+        log.info({ conversationId, attempt: analysisAttempt + 1, hasTranscript, hasSummary, hasDataCollection, nextDelayMs: delay }, '⏳ Waiting for AI analysis...');
+        await new Promise(r => setTimeout(r, delay));
       } else {
-        log.warn({ conversationId, hasTranscript, hasSummary, hasDataCollection }, '⚠️ AI analysis not available after 5 attempts — recording with available data');
+        log.warn({ conversationId, hasTranscript, hasSummary, hasDataCollection }, `⚠️ AI analysis not available after ${MAX_ANALYSIS_ATTEMPTS} attempts — recording with available data`);
       }
     }
 
@@ -606,8 +609,9 @@ callRoutes.post('/record-conversation', zValidator('json', recordConversationSch
     }
 
     if (!transcriptText) {
-      log.info({ conversationId }, 'Conversation has no transcript — skipping');
-      return c.json<ApiResponse>({ success: true, data: { status: 'no_new_conversation' } });
+      log.warn({ conversationId }, 'Conversation has no transcript — saving call record without transcript');
+      // Still save the call so it appears in the dashboard (ElevenLabs may not have processed it yet)
+      transcriptText = '';
     }
 
     // Calculate duration

@@ -533,6 +533,7 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
 
         const bhConfig = parseBusinessHours(agentRecord.businessHours);
         const { getDayRangeInTimezone, formatTimeInTimezone } = await import('../services/timezone.js');
+        const { getIcalBusySlots } = await import('../services/ical.js');
 
         // Helper: get available slots for a single date using agent's business hours config
         const getAvailableForDate = async (dateStr: string) => {
@@ -554,8 +555,19 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
           const busyTimes = existingApts
             .filter((a) => a.status !== 'cancelled')
             .map((a) => formatTimeInTimezone(new Date(a.scheduledAt), customerTz));
-          const available = allSlots.filter((t) => !busyTimes.includes(t));
-          return { date: dateStr, available, booked: busyTimes, isClosed: false };
+
+          // Also check iCal external calendar busy slots
+          const icalBusyTimes = await getIcalBusySlots(
+            agentRecord.customerId,
+            dateStr,
+            customerTz,
+            bhConfig.slotDurationMinutes,
+          );
+
+          // Merge both sources of busy times
+          const allBusyTimes = [...new Set([...busyTimes, ...icalBusyTimes])];
+          const available = allSlots.filter((t) => !allBusyTimes.includes(t));
+          return { date: dateStr, available, booked: allBusyTimes, isClosed: false };
         };
 
         // Check the requested date
@@ -683,9 +695,19 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
             .filter(a => a.status !== 'cancelled')
             .map(a => formatTimeInTimezone(new Date(a.scheduledAt), customerTz));
 
-          if (busyTimes.includes(time)) {
+          // Also check iCal external calendar busy slots
+          const { getIcalBusySlots } = await import('../services/ical.js');
+          const icalBusyTimes = await getIcalBusySlots(
+            agentRecord.customerId,
+            date,
+            customerTz,
+            bhConfig.slotDurationMinutes,
+          );
+          const allBusyTimes = [...new Set([...busyTimes, ...icalBusyTimes])];
+
+          if (allBusyTimes.includes(time)) {
             // Find nearest available slot
-            const freeSlots = validSlots.filter(t => !busyTimes.includes(t));
+            const freeSlots = validSlots.filter(t => !allBusyTimes.includes(t));
 
             // Find closest free slot to the requested time
             let nearestSlot: string | null = null;
@@ -726,6 +748,40 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
           }).returning();
 
           log.info({ appointmentId: apt?.id, date, time }, 'Appointment booked successfully');
+
+          // ── Send .ics email invite (fire-and-forget) ────────────
+          try {
+            const customerRecord = agentRecord.customer as any;
+            if (customerRecord?.email) {
+              const { generateIcsInvite } = await import('../services/ics-generator.js');
+              const { sendAppointmentInviteEmail } = await import('../services/email.js');
+
+              const endAt = new Date(scheduledAt.getTime() + (bhConfig.slotDurationMinutes || 30) * 60 * 1000);
+              const icsContent = generateIcsInvite({
+                summary: `Ραντεβού: ${callerName ?? 'Πελάτης'} — ${customerRecord.businessName ?? 'VoiceForge'}`,
+                description: `${serviceType ? `Υπηρεσία: ${serviceType}\n` : ''}Τηλέφωνο: ${callerPhone ?? 'N/A'}\n${notes ?? ''}`.trim(),
+                startAt: scheduledAt,
+                endAt,
+                organizerName: customerRecord.businessName ?? 'VoiceForge AI',
+                organizerEmail: customerRecord.email,
+                attendeeName: callerName ?? undefined,
+              });
+
+              // Send in background — don't block the response
+              sendAppointmentInviteEmail({
+                to: customerRecord.email,
+                businessName: customerRecord.businessName ?? 'VoiceForge AI',
+                callerName: callerName ?? 'Πελάτης',
+                date,
+                time,
+                serviceType: serviceType ?? undefined,
+                notes: notes ?? undefined,
+                icsContent,
+              }).catch((err) => log.error({ err }, 'Failed to send appointment invite email'));
+            }
+          } catch (emailErr) {
+            log.error({ emailErr }, 'Error preparing appointment invite email');
+          }
 
           return c.json({
             success: true,

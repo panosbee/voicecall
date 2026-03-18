@@ -53,6 +53,10 @@ export const customers = pgTable('customers', {
   googleOauthTokenEncrypted: text('google_oauth_token_encrypted'), // AES-256-GCM
   googleCalendarId: text('google_calendar_id'), // Primary calendar ID
 
+  // iCal feed integration (read external calendars)
+  icalFeedUrl: text('ical_feed_url'), // iCal URL (Google/Outlook/Apple)
+  icalLastSyncedAt: timestamp('ical_last_synced_at', { withTimezone: true }),
+
   // Settings
   timezone: text('timezone').notNull().default('Europe/Athens'),
   locale: text('locale').notNull().default('el-GR'),

@@ -6,9 +6,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { eq, count } from 'drizzle-orm';
+import { eq, count, and, gte, lte } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { customers, agents } from '../db/schema/index.js';
+import { customers, agents, icalCachedEvents } from '../db/schema/index.js';
 import { authMiddleware, type AuthUser } from '../middleware/auth.js';
 import { createLogger } from '../config/logger.js';
 import type { ApiResponse } from '@voiceforge/shared';
@@ -90,6 +90,8 @@ customerRoutes.get('/me', async (c) => {
       hasElevenLabsAgents,
       hasStripeSubscription: !!customer.stripeSubscriptionId,
       googleCalendarConnected: customer.googleCalendarConnected,
+      hasIcalFeed: !!customer.icalFeedUrl,
+      icalLastSyncedAt: customer.icalLastSyncedAt?.toISOString() ?? null,
       agentCount,
       timezone: customer.timezone,
       locale: customer.locale,
@@ -218,4 +220,167 @@ customerRoutes.post('/complete-onboarding', async (c) => {
 
   log.info({ customerId: updated.id }, 'Onboarding completed');
   return c.json<ApiResponse>({ success: true });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// iCal Calendar Integration Routes
+// ═══════════════════════════════════════════════════════════════════
+
+const icalSettingsSchema = z.object({
+  icalFeedUrl: z.string().url().max(2000).nullable(),
+});
+
+// ── PUT /customers/ical-settings — Save iCal feed URL ────────────
+
+customerRoutes.put('/ical-settings', zValidator('json', icalSettingsSchema), async (c) => {
+  const user = c.get('user');
+  const { icalFeedUrl } = c.req.valid('json');
+
+  // Validate URL if provided
+  if (icalFeedUrl) {
+    const { validateIcalUrl } = await import('../services/ical.js');
+    const validation = validateIcalUrl(icalFeedUrl);
+    if (!validation.valid) {
+      return c.json<ApiResponse>(
+        { success: false, error: { code: 'VALIDATION_ERROR', message: validation.error || 'Invalid iCal URL' } },
+        400,
+      );
+    }
+  }
+
+  const [updated] = await db
+    .update(customers)
+    .set({
+      icalFeedUrl: icalFeedUrl,
+      // Clear sync timestamp when URL changes
+      icalLastSyncedAt: icalFeedUrl ? undefined : null,
+      updatedAt: new Date(),
+    })
+    .where(eq(customers.userId, user.sub))
+    .returning();
+
+  if (!updated) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Customer not found' } }, 404);
+  }
+
+  // If URL was cleared, also delete cached events
+  if (!icalFeedUrl) {
+    await db.delete(icalCachedEvents).where(eq(icalCachedEvents.customerId, updated.id));
+  }
+
+  log.info({ customerId: updated.id, hasUrl: !!icalFeedUrl }, 'iCal settings updated');
+  return c.json<ApiResponse>({ success: true, data: { icalFeedUrl: updated.icalFeedUrl } });
+});
+
+// ── GET /customers/ical-settings — Get iCal settings ─────────────
+
+customerRoutes.get('/ical-settings', async (c) => {
+  const user = c.get('user');
+
+  const customer = await db.query.customers.findFirst({
+    where: eq(customers.userId, user.sub),
+    columns: { id: true, icalFeedUrl: true, icalLastSyncedAt: true },
+  });
+
+  if (!customer) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Customer not found' } }, 404);
+  }
+
+  // Count cached events
+  const [eventCount] = await db
+    .select({ count: count() })
+    .from(icalCachedEvents)
+    .where(eq(icalCachedEvents.customerId, customer.id));
+
+  return c.json<ApiResponse>({
+    success: true,
+    data: {
+      icalFeedUrl: customer.icalFeedUrl,
+      lastSyncedAt: customer.icalLastSyncedAt?.toISOString() ?? null,
+      cachedEventCount: eventCount?.count ?? 0,
+    },
+  });
+});
+
+// ── POST /customers/ical-sync — Trigger iCal feed sync ───────────
+
+customerRoutes.post('/ical-sync', async (c) => {
+  const user = c.get('user');
+
+  const customer = await db.query.customers.findFirst({
+    where: eq(customers.userId, user.sub),
+    columns: { id: true, icalFeedUrl: true },
+  });
+
+  if (!customer) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Customer not found' } }, 404);
+  }
+
+  if (!customer.icalFeedUrl) {
+    return c.json<ApiResponse>(
+      { success: false, error: { code: 'VALIDATION_ERROR', message: 'No iCal feed URL configured' } },
+      400,
+    );
+  }
+
+  try {
+    const { syncIcalEvents } = await import('../services/ical.js');
+    const result = await syncIcalEvents(customer.id, customer.icalFeedUrl);
+    log.info({ customerId: customer.id, ...result }, 'iCal sync triggered');
+
+    return c.json<ApiResponse>({
+      success: true,
+      data: {
+        total: result.total,
+        synced: result.synced,
+        syncedAt: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'iCal sync failed';
+    log.error({ customerId: customer.id, error: message }, 'iCal sync failed');
+    return c.json<ApiResponse>(
+      { success: false, error: { code: 'ICAL_SYNC_ERROR', message } },
+      502,
+    );
+  }
+});
+
+// ── GET /customers/ical-events — Get cached iCal events ──────────
+
+customerRoutes.get('/ical-events', async (c) => {
+  const user = c.get('user');
+  const from = c.req.query('from'); // YYYY-MM-DD
+  const to = c.req.query('to');     // YYYY-MM-DD
+
+  const customer = await db.query.customers.findFirst({
+    where: eq(customers.userId, user.sub),
+    columns: { id: true },
+  });
+
+  if (!customer) {
+    return c.json<ApiResponse>({ success: false, error: { code: 'NOT_FOUND', message: 'Customer not found' } }, 404);
+  }
+
+  // Build query conditions
+  const conditions = [eq(icalCachedEvents.customerId, customer.id)];
+  if (from) conditions.push(gte(icalCachedEvents.startAt, new Date(from + 'T00:00:00Z')));
+  if (to) conditions.push(lte(icalCachedEvents.startAt, new Date(to + 'T23:59:59Z')));
+
+  const events = await db.query.icalCachedEvents.findMany({
+    where: and(...conditions),
+    orderBy: (t, { asc }) => [asc(t.startAt)],
+    limit: 500,
+  });
+
+  return c.json<ApiResponse>({
+    success: true,
+    data: events.map((e) => ({
+      id: e.id,
+      uid: e.uid,
+      summary: e.summary,
+      startAt: e.startAt.toISOString(),
+      endAt: e.endAt.toISOString(),
+    })),
+  });
 });

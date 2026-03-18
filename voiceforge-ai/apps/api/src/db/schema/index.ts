@@ -87,3 +87,10 @@ export {
   type PendingRegistrationSelect,
   type PendingRegistrationInsert,
 } from './pending-registrations';
+
+export {
+  icalCachedEvents,
+  icalCachedEventsRelations,
+  type IcalCachedEventSelect,
+  type IcalCachedEventInsert,
+} from './ical-events';

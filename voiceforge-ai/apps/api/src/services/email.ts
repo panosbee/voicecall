@@ -35,6 +35,7 @@ interface SendEmailParams {
   subject: string;
   html: string;
   text?: string;
+  attachments?: Array<{ filename: string; content: string }>; // content = base64
 }
 
 async function sendEmail(params: SendEmailParams): Promise<{ id: string }> {
@@ -43,19 +44,26 @@ async function sendEmail(params: SendEmailParams): Promise<{ id: string }> {
     return { id: 'skipped' };
   }
 
+  const body: Record<string, unknown> = {
+    from: FROM_ADDRESS,
+    to: [params.to],
+    subject: params.subject,
+    html: params.html,
+    text: params.text,
+  };
+
+  // Resend API supports attachments as [{filename, content (base64)}]
+  if (params.attachments && params.attachments.length > 0) {
+    body.attachments = params.attachments;
+  }
+
   const response = await fetch(RESEND_API, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${env.RESEND_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      from: FROM_ADDRESS,
-      to: [params.to],
-      subject: params.subject,
-      html: params.html,
-      text: params.text,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -452,5 +460,98 @@ export async function sendLicenseKeyEmail(params: {
       </html>
     `,
     text: `Κλειδί ενεργοποίησης VoiceForge AI: ${params.licenseKey} — Πακέτο: ${planLabels[params.plan] || params.plan}, Διάρκεια: ${params.durationMonths} μήνες, Ισχύει μέχρι: ${formattedExpiry}. Ενεργοποιήστε στο: ${env.FRONTEND_URL}/activate`,
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Appointment Invite Email (with .ics attachment)
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Send appointment confirmation email with .ics calendar invite attachment.
+ * The .ics file is auto-accepted by most calendar apps (Google, Outlook, Apple).
+ */
+export async function sendAppointmentInviteEmail(params: {
+  to: string;
+  businessName: string;
+  callerName: string;
+  date: string;       // YYYY-MM-DD
+  time: string;       // HH:MM
+  serviceType?: string;
+  notes?: string;
+  icsContent: string; // Generated .ics file content
+}): Promise<void> {
+  const icsBase64 = Buffer.from(params.icsContent, 'utf-8').toString('base64');
+
+  await sendEmail({
+    to: params.to,
+    subject: `📅 Νέο Ραντεβού: ${escapeHtml(params.callerName)} — ${params.date} ${params.time}`,
+    html: `
+      <!DOCTYPE html>
+      <html lang="el">
+      <head><meta charset="UTF-8"></head>
+      <body style="font-family:Inter,system-ui,sans-serif;background:#f8fafc;padding:40px 20px;">
+        <div style="max-width:560px;margin:0 auto;background:white;border-radius:12px;padding:40px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+          <div style="text-align:center;margin-bottom:32px;">
+            <div style="width:48px;height:48px;background:linear-gradient(135deg,#f59e0b,#d97706);border-radius:12px;display:inline-flex;align-items:center;justify-content:center;">
+              <span style="font-size:24px;color:white;">📅</span>
+            </div>
+            <h1 style="font-size:24px;color:#1e293b;margin-top:16px;">Νέο Ραντεβού</h1>
+          </div>
+
+          <p style="font-size:16px;color:#333;line-height:1.6;">
+            Κλείστηκε ραντεβού μέσω του AI βοηθού <strong>${escapeHtml(params.businessName)}</strong>.
+          </p>
+
+          <table style="width:100%;border-collapse:collapse;margin:20px 0;">
+            <tr style="border-bottom:1px solid #e2e8f0;">
+              <td style="padding:10px 0;color:#64748b;font-size:14px;">Πελάτης</td>
+              <td style="padding:10px 0;color:#1e293b;font-size:14px;font-weight:600;text-align:right;">${escapeHtml(params.callerName)}</td>
+            </tr>
+            <tr style="border-bottom:1px solid #e2e8f0;">
+              <td style="padding:10px 0;color:#64748b;font-size:14px;">Ημερομηνία</td>
+              <td style="padding:10px 0;color:#1e293b;font-size:14px;font-weight:600;text-align:right;">${escapeHtml(params.date)}</td>
+            </tr>
+            <tr style="border-bottom:1px solid #e2e8f0;">
+              <td style="padding:10px 0;color:#64748b;font-size:14px;">Ώρα</td>
+              <td style="padding:10px 0;color:#2563eb;font-size:14px;font-weight:700;text-align:right;">${escapeHtml(params.time)}</td>
+            </tr>
+            ${params.serviceType ? `
+            <tr style="border-bottom:1px solid #e2e8f0;">
+              <td style="padding:10px 0;color:#64748b;font-size:14px;">Υπηρεσία</td>
+              <td style="padding:10px 0;color:#1e293b;font-size:14px;text-align:right;">${escapeHtml(params.serviceType)}</td>
+            </tr>` : ''}
+            ${params.notes ? `
+            <tr>
+              <td style="padding:10px 0;color:#64748b;font-size:14px;">Σημειώσεις</td>
+              <td style="padding:10px 0;color:#1e293b;font-size:14px;text-align:right;">${escapeHtml(params.notes)}</td>
+            </tr>` : ''}
+          </table>
+
+          <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:16px;margin:20px 0;">
+            <p style="font-size:14px;color:#1d4ed8;margin:0;font-weight:600;">
+              📎 Συνημμένο αρχείο .ics
+            </p>
+            <p style="font-size:13px;color:#3b82f6;margin:8px 0 0 0;">
+              Ανοίξτε το συνημμένο αρχείο invite.ics για να προσθέσετε το ραντεβού στο ημερολόγιό σας αυτόματα.
+            </p>
+          </div>
+
+          <div style="text-align:center;margin-top:24px;">
+            <a href="${env.FRONTEND_URL}/dashboard/calendar" style="color:#2563eb;font-size:14px;font-weight:600;text-decoration:none;">
+              Προβολή στο Dashboard →
+            </a>
+          </div>
+        </div>
+      </body>
+      </html>
+    `,
+    text: `Νέο ραντεβού: ${params.callerName} — ${params.date} ${params.time}${params.serviceType ? ` (${params.serviceType})` : ''}. Ανοίξτε το .ics αρχείο για να το προσθέσετε στο ημερολόγιό σας.`,
+    attachments: [
+      {
+        filename: 'invite.ics',
+        content: icsBase64,
+      },
+    ],
   });
 }
