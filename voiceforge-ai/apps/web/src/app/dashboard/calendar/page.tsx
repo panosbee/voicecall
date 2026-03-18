@@ -27,6 +27,11 @@ import {
   ExternalLink,
   CalendarCheck,
   Trash2,
+  CalendarSync,
+  RefreshCw,
+  Link2,
+  CheckCircle2,
+  AlertCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ApiResponse } from '@voiceforge/shared';
@@ -117,6 +122,28 @@ export default function CalendarPage() {
   // Audio player state
   const [playingCallId, setPlayingCallId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // iCal state
+  const [icalUrl, setIcalUrl] = useState('');
+  const [icalLastSynced, setIcalLastSynced] = useState<string | null>(null);
+  const [icalEventCount, setIcalEventCount] = useState(0);
+  const [icalSaving, setIcalSaving] = useState(false);
+  const [icalSyncing, setIcalSyncing] = useState(false);
+  const [icalLoaded, setIcalLoaded] = useState(false);
+
+  // Load iCal settings on mount
+  useEffect(() => {
+    api.get<ApiResponse<{ icalFeedUrl: string | null; lastSyncedAt: string | null; cachedEventCount: number }>>('/api/customers/ical-settings')
+      .then((res) => {
+        if (res.success && res.data) {
+          setIcalUrl(res.data.icalFeedUrl ?? '');
+          setIcalLastSynced(res.data.lastSyncedAt);
+          setIcalEventCount(res.data.cachedEventCount);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setIcalLoaded(true));
+  }, []);
 
   // Refs to store raw data for the detail panel (indexed by event id)
   const callMapRef = useRef<Map<string, CalendarCall>>(new Map());
@@ -346,6 +373,44 @@ export default function CalendarPage() {
     } catch { toast.error('Error'); }
   };
 
+  // ── iCal handlers ────────────────────────────────────────────
+
+  const handleSaveIcal = async () => {
+    setIcalSaving(true);
+    try {
+      const result = await api.put<ApiResponse<{ icalFeedUrl: string | null }>>('/api/customers/ical-settings', {
+        icalFeedUrl: icalUrl.trim() || null,
+      });
+      if (result.success) {
+        toast.success(t.calendar.icalSaved);
+        if (!icalUrl.trim()) {
+          setIcalLastSynced(null);
+          setIcalEventCount(0);
+        }
+      }
+    } catch {
+      toast.error(t.calendar.icalSaveError);
+    } finally {
+      setIcalSaving(false);
+    }
+  };
+
+  const handleSyncIcal = async () => {
+    setIcalSyncing(true);
+    try {
+      const result = await api.post<ApiResponse<{ total: number; synced: number; syncedAt: string }>>('/api/customers/ical-sync', {});
+      if (result.success && result.data) {
+        setIcalLastSynced(result.data.syncedAt);
+        setIcalEventCount(result.data.synced);
+        toast.success(`${result.data.synced} ${t.calendar.icalSynced}`);
+      }
+    } catch {
+      toast.error(t.calendar.icalSyncError);
+    } finally {
+      setIcalSyncing(false);
+    }
+  };
+
   // ═══════════════════════════════════════════════════════════════
   // RENDER
   // ═══════════════════════════════════════════════════════════════
@@ -387,6 +452,89 @@ export default function CalendarPage() {
               {t.calendar.appointmentsTag}
             </div>
           </div>
+
+          {/* iCal Calendar Sync */}
+          <Card padding="md" className="mt-4">
+            <div className="flex items-center gap-2 mb-4">
+              <CalendarSync className="w-5 h-5 text-brand-500" />
+              <h3 className="font-semibold text-text-primary">{t.calendar.icalTitle}</h3>
+            </div>
+
+            <p className="text-sm text-text-secondary mb-4">
+              {t.calendar.icalDescription}
+            </p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1">
+                  {t.calendar.icalFeedUrlLabel}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    value={icalUrl}
+                    onChange={(e) => setIcalUrl(e.target.value)}
+                    placeholder={t.calendar.icalFeedUrlPlaceholder}
+                    className="flex-1 rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500"
+                  />
+                  <Button
+                    onClick={handleSaveIcal}
+                    isLoading={icalSaving}
+                    variant="secondary"
+                    leftIcon={<Link2 className="w-4 h-4" />}
+                  >
+                    {t.calendar.icalSave}
+                  </Button>
+                </div>
+              </div>
+
+              {/* Sync status */}
+              {icalLoaded && icalUrl && (
+                <div className="flex items-center justify-between p-3 rounded-lg bg-bg-secondary border border-border">
+                  <div className="flex items-center gap-3">
+                    {icalLastSynced ? (
+                      <CheckCircle2 className="w-5 h-5 text-green-500" />
+                    ) : (
+                      <AlertCircle className="w-5 h-5 text-amber-500" />
+                    )}
+                    <div>
+                      <p className="text-sm text-text-primary font-medium">
+                        {icalLastSynced
+                          ? `${icalEventCount} ${t.calendar.icalEventsCount}`
+                          : t.calendar.icalNoSync}
+                      </p>
+                      {icalLastSynced && (
+                        <p className="text-xs text-text-tertiary">
+                          {t.calendar.icalLastSync}: {new Date(icalLastSynced).toLocaleString(locale === 'el' ? 'el-GR' : 'en-US')}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <Button
+                    onClick={handleSyncIcal}
+                    isLoading={icalSyncing}
+                    size="sm"
+                    variant="secondary"
+                    leftIcon={<RefreshCw className="w-4 h-4" />}
+                  >
+                    {t.calendar.icalSync}
+                  </Button>
+                </div>
+              )}
+
+              {/* Help text */}
+              <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800">
+                <p className="text-xs text-blue-700 dark:text-blue-300 font-medium mb-1">
+                  {t.calendar.icalHowToFind}
+                </p>
+                <ul className="text-xs text-blue-600 dark:text-blue-400 space-y-1 list-disc list-inside">
+                  <li><strong>Google Calendar:</strong> {t.calendar.icalHelpGoogle}</li>
+                  <li><strong>Outlook:</strong> {t.calendar.icalHelpOutlook}</li>
+                  <li><strong>Apple Calendar:</strong> {t.calendar.icalHelpApple}</li>
+                </ul>
+              </div>
+            </div>
+          </Card>
         </div>
 
         {/* ── Event Detail Panel ────────────────────────────────── */}

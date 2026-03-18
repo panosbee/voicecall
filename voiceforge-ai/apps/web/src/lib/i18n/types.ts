@@ -626,6 +626,25 @@ export interface Translations {
     deleteAppointmentConfirm: string;
     noEvents: string;
     eventsCount: string;
+    // iCal integration
+    icalTitle: string;
+    icalDescription: string;
+    icalFeedUrlLabel: string;
+    icalFeedUrlPlaceholder: string;
+    icalSave: string;
+    icalSaved: string;
+    icalSaveError: string;
+    icalSync: string;
+    icalSyncing: string;
+    icalSynced: string;
+    icalSyncError: string;
+    icalNoSync: string;
+    icalLastSync: string;
+    icalEventsCount: string;
+    icalHowToFind: string;
+    icalHelpGoogle: string;
+    icalHelpOutlook: string;
+    icalHelpApple: string;
   };
   // ── Shared Labels (industries, plans, time) ────────────────────
   shared: {
