@@ -148,8 +148,8 @@ widgetRoutes.post('/:agentId/tool-call', async (c) => {
       return c.json({ error: true, message: 'Agent not available' }, 404);
     }
 
-    // Forward to the server-tool handler via internal fetch
-    const internalResponse = await fetch(`http://localhost:${env.PORT || 3001}/webhooks/elevenlabs/server-tool`, {
+    // Forward to the server-tool handler via internal loopback (works behind reverse proxies)
+    const internalResponse = await fetch(`http://127.0.0.1:${env.PORT || 3001}/webhooks/elevenlabs/server-tool`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

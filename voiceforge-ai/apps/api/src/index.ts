@@ -16,7 +16,7 @@ import { HTTPException } from 'hono/http-exception';
 import { env, logger } from './config/index.js';
 import { disconnectDb } from './db/connection.js';
 import { telnyxWebhookMiddleware } from './middleware/webhook-verify.js';
-import { apiRateLimiter, webhookRateLimiter } from './middleware/rate-limit.js';
+import { apiRateLimiter, webhookRateLimiter, rateLimiter } from './middleware/rate-limit.js';
 
 // Routes
 import { healthRoutes } from './routes/health.js';
@@ -112,6 +112,7 @@ app.route('/registration', registrationRoutes);
 
 // Widget embed routes (public — accessed from customer websites, CORS *)
 app.use('/widget/*', cors({ origin: '*', allowMethods: ['GET', 'POST', 'OPTIONS'], allowHeaders: ['Content-Type', 'Accept'], maxAge: 86400 }));
+app.use('/widget/*', rateLimiter(60, 60_000)); // 60 req/min per IP — prevent abuse
 app.route('/widget', widgetRoutes);
 
 // Admin panel (protected by ADMIN_SECRET)

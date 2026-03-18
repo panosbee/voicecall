@@ -14,6 +14,7 @@ import { MessageCircle, RefreshCw, Mic, AlertCircle, CheckCircle2, ArrowRight } 
 import { toast } from 'sonner';
 import type { ApiResponse } from '@voiceforge/shared';
 import type { OnboardingData } from './page';
+import { API_URL } from '@/lib/env';
 
 interface StepTestProps {
   data: OnboardingData;
@@ -76,8 +77,32 @@ export function StepTest({ data, updateData, onNext, onBack }: StepTestProps) {
     const timer = setTimeout(() => {
       if (cancelled || !container) return;
       container.innerHTML = '';
-      const el = document.createElement('elevenlabs-convai');
+      const el = document.createElement('elevenlabs-convai') as any;
       el.setAttribute('agent-id', data.testAgentId);
+
+      // Register client tools so calendar/appointment features work during onboarding test
+      const makeToolHandler = (toolName: string) => async (params: Record<string, unknown>) => {
+        try {
+          const res = await fetch(`${API_URL}/webhooks/elevenlabs/server-tool`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tool_name: toolName, agent_id: data.testAgentId, parameters: params || {} }),
+          });
+          const result = await res.json();
+          return typeof result === 'string' ? result : JSON.stringify(result);
+        } catch (e) {
+          console.error('[StepTest] Tool call failed:', toolName, e);
+          return JSON.stringify({ error: true, message: 'Tool call failed' });
+        }
+      };
+      el.clientTools = {
+        check_availability: makeToolHandler('check_availability'),
+        book_appointment: makeToolHandler('book_appointment'),
+        get_current_datetime: makeToolHandler('get_current_datetime'),
+        get_caller_history: makeToolHandler('get_caller_history'),
+        get_business_hours: makeToolHandler('get_business_hours'),
+      };
+
       container.appendChild(el);
       setHasTestedOnce(true);
     }, 50);
