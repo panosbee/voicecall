@@ -67,6 +67,9 @@ export const agents = pgTable('agents', {
   // Dynamic variables (defaults)
   dynamicVariables: jsonb('dynamic_variables').notNull().default('{}'),
 
+  // Business hours config (per-agent scheduling)
+  businessHours: jsonb('business_hours').notNull().default('{}'),
+
   // Telephony settings
   noiseSuppression: text('noise_suppression').notNull().default('krisp'),
   timeLimitSecs: integer('time_limit_secs').notNull().default(1800),

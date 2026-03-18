@@ -285,26 +285,26 @@ export function formatGreekDateTime(date: Date, timezone: string): string {
  * the correct date, time, and day of the week.
  */
 export function buildDateTimePromptInjection(timezone: string = 'Europe/Athens', locale: string = 'el'): string {
-  const dt = getCurrentDateTime(timezone);
-
   if (locale === 'el') {
     return [
       `\n[ΠΛΗΡΟΦΟΡΙΕΣ ΗΜΕΡΟΜΗΝΙΑΣ & ΩΡΑΣ]`,
-      `Τρέχουσα ημερομηνία: ${dt.formatted_el}`,
-      `Ημέρα: ${dt.dayName_el}`,
-      `Ζώνη ώρας: ${dt.timezone} (${dt.utcOffset})`,
-      `Σημαντικό: Χρησιμοποίησε αυτές τις πληροφορίες για να προσφέρεις ακριβή χρόνο στον πελάτη.`,
-      `Αν ο πελάτης ρωτήσει "τι ώρα είναι" ή "τι μέρα είναι", απάντησε με βάση αυτά τα δεδομένα.\n`,
+      `Τρέχουσα ημερομηνία: {{var_current_date_formatted}}`,
+      `Ημέρα: {{var_current_day}}`,
+      `Ζώνη ώρας: ${timezone}`,
+      `ΣΗΜΑΝΤΙΚΟ: Αν δεν έχεις σίγουρη γνώση της τρέχουσας ημερομηνίας, ΚΑΛΕΣΕ το εργαλείο "get_current_datetime" αμέσως.`,
+      `Χρησιμοποίησε τις πληροφορίες ημερομηνίας/ώρας για ακριβείς αναφορές χρόνου στον πελάτη.`,
+      `Αν ο πελάτης πει "αύριο", "Δευτέρα", "την επόμενη εβδομάδα" κ.λπ., υπολόγισε την ΠΡΑΓΜΑΤΙΚΗ ημερομηνία βάσει της σημερινής.\n`,
     ].join('\n');
   }
 
   return [
     `\n[DATE & TIME INFORMATION]`,
-    `Current date: ${dt.formatted_en}`,
-    `Day: ${dt.dayName_en}`,
-    `Timezone: ${dt.timezone} (${dt.utcOffset})`,
-    `Important: Use this information to provide accurate time references to the caller.`,
-    `If the caller asks "what time is it" or "what day is it", respond based on this data.\n`,
+    `Current date: {{var_current_date_formatted}}`,
+    `Day: {{var_current_day}}`,
+    `Timezone: ${timezone}`,
+    `IMPORTANT: If you are unsure of the current date, CALL the "get_current_datetime" tool immediately.`,
+    `Use date/time info for accurate time references to the caller.`,
+    `If the caller says "tomorrow", "Monday", "next week" etc., calculate the REAL date based on today's date.\n`,
   ].join('\n');
 }
 

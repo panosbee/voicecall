@@ -120,6 +120,17 @@ const createAgentSchema = z.object({
   voiceSpeed: z.number().min(0.7).max(1.3).optional(),
   /** If provided, reuse existing ElevenLabs agent (from test-preview) instead of creating new */
   existingElevenlabsAgentId: z.string().optional(),
+  businessHours: z.object({
+    weeklySchedule: z.record(
+      z.object({
+        enabled: z.boolean(),
+        timeRanges: z.array(z.object({ start: z.string(), end: z.string() })),
+      }),
+    ),
+    slotDurationMinutes: z.number().min(5).max(240),
+    closedDates: z.array(z.string()),
+    timezone: z.string().optional(),
+  }).optional(),
 });
 
 const updateAgentSchema = z.object({
@@ -144,6 +155,17 @@ const updateAgentSchema = z.object({
   widgetButtonText: z.string().max(50).optional(),
   widgetIconType: z.enum(['phone', 'mic', 'chat']).optional(),
   widgetAllowedOrigins: z.array(z.string().url()).optional(),
+  businessHours: z.object({
+    weeklySchedule: z.record(
+      z.object({
+        enabled: z.boolean(),
+        timeRanges: z.array(z.object({ start: z.string(), end: z.string() })),
+      }),
+    ),
+    slotDurationMinutes: z.number().min(5).max(240),
+    closedDates: z.array(z.string()),
+    timezone: z.string().optional(),
+  }).optional(),
 });
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -430,6 +452,7 @@ agentRoutes.post('/', zValidator('json', createAgentSchema), async (c) => {
         ...(body.voiceStability !== undefined ? { voiceStability: body.voiceStability } : {}),
         ...(body.voiceSimilarity !== undefined ? { voiceSimilarity: body.voiceSimilarity } : {}),
         ...(body.voiceSpeed !== undefined ? { voiceSpeed: body.voiceSpeed } : {}),
+        ...(body.businessHours ? { businessHours: body.businessHours } : {}),
         isDefault: isFirst,
       })
       .returning();
@@ -553,6 +576,7 @@ agentRoutes.patch('/:id', zValidator('json', updateAgentSchema), async (c) => {
         ...(body.widgetButtonText ? { widgetButtonText: body.widgetButtonText } : {}),
         ...(body.widgetIconType ? { widgetIconType: body.widgetIconType } : {}),
         ...(body.widgetAllowedOrigins !== undefined ? { widgetAllowedOrigins: body.widgetAllowedOrigins } : {}),
+        ...(body.businessHours ? { businessHours: body.businessHours } : {}),
         tools: updateClientTools,
         updatedAt: new Date(),
       })

@@ -8,6 +8,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { agents, calls, webhookEvents } from '../db/schema/index.js';
 import { createLogger } from '../config/logger.js';
+import { getCurrentDateTime } from '../services/timezone.js';
 import type {
   DynamicVariablesWebhookPayload,
   DynamicVariablesResponse,
@@ -50,6 +51,8 @@ webhookRoutes.post('/telnyx/pre-call', async (c) => {
     }
 
     const customer = agent.customer;
+    const customerTz = customer.timezone || 'Europe/Athens';
+    const dt = getCurrentDateTime(customerTz);
 
     // Build dynamic variables response
     const response: DynamicVariablesResponse = {
@@ -59,6 +62,11 @@ webhookRoutes.post('/telnyx/pre-call', async (c) => {
         var_timezone: customer.timezone,
         var_customer_id: customer.id,
         var_agent_id: agent.id,
+        // Fresh date/time for every call — replaces {{var_current_date}} etc. in agent prompt
+        var_current_date: dt.date,
+        var_current_time: dt.time,
+        var_current_day: dt.dayName_el,
+        var_current_date_formatted: dt.formatted_el,
         // Merge agent-specific dynamic variables
         ...(agent.dynamicVariables as Record<string, string>),
       },

@@ -14,6 +14,7 @@ import { sendCallSummaryEmail, isEmailConfigured } from '../services/email.js';
 import { getTelephonyProvider } from '../services/telephony/index.js';
 import { parseDateTimeInTimezone } from '../services/timezone.js';
 import { extractAppointmentFromTranscript } from '../services/transcript-parser.js';
+import { parseBusinessHours, generateSlots, isWorkingDay, formatBusinessHoursForDisplay, getBusinessHoursSummary } from '../services/business-hours.js';
 
 const log = createLogger('elevenlabs-webhooks');
 
@@ -179,9 +180,14 @@ elevenlabsWebhookRoutes.post('/post-conversation', async (c) => {
     }
 
     // Use AI-extracted data (works for both Greek and English)
-    const appointmentBooked = !!(extractedData.appointment_date || extractedData.appointment_time);
+    // appointmentBooked requires BOTH date AND time, plus strong intent signal
+    // This prevents false positives when caller just mentions a date/time in passing
     const appointmentDate = extractedData.appointment_date ?? null;
-    const appointmentTime = extractedData.appointment_time ?? '09:00';
+    const appointmentTime = extractedData.appointment_time ?? null;
+    const hasDateAndTime = !!(appointmentDate && appointmentTime);
+    const hasBookingIntent = extractedData.caller_intent === 'appointment_booking';
+    // Only mark as booked if: (date+time present AND intent is booking) OR (AI explicitly confirmed via data collection)
+    const appointmentBooked = hasDateAndTime && (hasBookingIntent || aiDataAvailable);
     const appointmentCallerName = extractedData.caller_name ?? null;
     const appointmentCallerPhone = extractedData.caller_phone ?? callerNumber;
     const appointmentReason = extractedData.appointment_reason ?? null;
@@ -198,16 +204,24 @@ elevenlabsWebhookRoutes.post('/post-conversation', async (c) => {
 
     // ── Dedup: Check if Telnyx already created a call record ────
     // When both Telnyx and ElevenLabs webhooks fire for the same
-    // conversation, we UPDATE the existing record instead of INSERT
-    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
-    const existingCall = await db.query.calls.findFirst({
-      where: and(
-        eq(calls.agentId, agent.id),
-        gte(calls.startedAt, twoMinutesAgo),
-        lte(calls.startedAt, new Date()),
-      ),
-      orderBy: [desc(calls.startedAt)],
-    });
+    // conversation, we UPDATE the existing record instead of INSERT.
+    // Match by callerNumber + agentId + time window to avoid merging
+    // two concurrent calls from different callers into one record (#16).
+    let existingCall = null as Awaited<ReturnType<typeof db.query.calls.findFirst>> | null;
+
+    // Try precise match: same agent + same caller within 2-minute window
+    if (callerNumber && callerNumber !== 'unknown') {
+      const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+      existingCall = await db.query.calls.findFirst({
+        where: and(
+          eq(calls.agentId, agent.id),
+          eq(calls.callerNumber, callerNumber),
+          gte(calls.startedAt, twoMinutesAgo),
+          lte(calls.startedAt, new Date()),
+        ),
+        orderBy: [desc(calls.startedAt)],
+      }) ?? null;
+    }
 
     let callRecord;
 
@@ -312,54 +326,60 @@ elevenlabsWebhookRoutes.post('/post-conversation', async (c) => {
       }
     }
 
-    // ── Store Appointment if Booked — with slot conflict resolution ──
+    // ── Store Appointment if Booked — deduplicate with server tool ──
     if (appointmentBooked && callRecord) {
       try {
         const aptDate = appointmentDate;
-        const aptTime = appointmentTime;
+        const aptTime = appointmentTime || '09:00';
 
         // Use customer timezone for proper UTC conversion
         const customerTz = customer?.timezone || 'Europe/Athens';
-        let scheduledAt = aptDate
+        const scheduledAt = aptDate
           ? parseDateTimeInTimezone(aptDate, aptTime, customerTz)
           : new Date();
 
-        // Check for slot conflicts: find existing appointments within ±30 minutes
+        // Check if the book_appointment server tool already created this appointment
+        // during the call. If so, just link it to the call record — don't duplicate.
         const slotStart = new Date(scheduledAt.getTime() - 30 * 60 * 1000);
         const slotEnd = new Date(scheduledAt.getTime() + 30 * 60 * 1000);
-        const conflicting = await db.query.appointments.findMany({
+        const existingAppointments = await db.query.appointments.findMany({
           where: and(
             eq(appointments.customerId, agent.customerId),
+            eq(appointments.agentId, agent.id),
             gte(appointments.scheduledAt, slotStart),
             lte(appointments.scheduledAt, slotEnd),
           ),
           orderBy: [desc(appointments.scheduledAt)],
         });
 
-        if (conflicting.length > 0) {
-          // Slot taken — move appointment after the last conflict
-          const lastConflict = conflicting[0]!;
-          const conflictEnd = new Date(lastConflict.scheduledAt.getTime() + (lastConflict.durationMinutes || 30) * 60 * 1000);
-          scheduledAt = conflictEnd;
+        if (existingAppointments.length > 0) {
+          // Appointment already exists (created by book_appointment tool) — link to call
+          const existing = existingAppointments[0]!;
+          if (!existing.callId) {
+            await db.update(appointments)
+              .set({ callId: callRecord.id })
+              .where(eq(appointments.id, existing.id));
+          }
           log.info(
-            { originalSlot: `${aptDate} ${aptTime}`, movedTo: scheduledAt.toISOString(), conflicts: conflicting.length },
-            'Appointment slot conflict — moved to next available slot',
+            { callId: callRecord.id, appointmentId: existing.id, scheduledAt: existing.scheduledAt.toISOString() },
+            'Existing appointment linked to call record (no duplicate created)',
           );
+        } else {
+          // No existing appointment — create one from post-call extracted data
+          await db.insert(appointments).values({
+            customerId: agent.customerId,
+            agentId: agent.id,
+            callId: callRecord.id,
+            callerName: appointmentCallerName ?? callerNumber,
+            callerPhone: appointmentCallerPhone,
+            scheduledAt,
+            notes: appointmentReason ?? summary ?? null,
+            status: 'pending',
+          });
+          log.info({ callId: callRecord.id, scheduledAt: scheduledAt.toISOString() }, 'Appointment record created from post-call data');
         }
-
-        await db.insert(appointments).values({
-          customerId: agent.customerId,
-          agentId: agent.id,
-          callId: callRecord.id,
-          callerName: appointmentCallerName ?? callerNumber,
-          callerPhone: appointmentCallerPhone,
-          scheduledAt,
-          notes: appointmentReason ?? summary ?? null,
-          status: 'pending',
-        });
-        log.info({ callId: callRecord.id, scheduledAt: scheduledAt.toISOString() }, 'Appointment record created from post-call data');
       } catch (aptErr) {
-        log.error({ error: aptErr }, 'Failed to create appointment record');
+        log.error({ error: aptErr }, 'Failed to create/link appointment record');
       }
     }
 
@@ -503,7 +523,6 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
     switch (toolName) {
       case 'check_availability': {
         const requestedDate = parameters?.requested_date as string;
-        const BUSINESS_SLOTS = ['09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '12:00', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30', '17:00'];
 
         if (!agentRecord) {
           return c.json({
@@ -512,16 +531,19 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
           });
         }
 
+        const bhConfig = parseBusinessHours(agentRecord.businessHours);
         const { getDayRangeInTimezone, formatTimeInTimezone } = await import('../services/timezone.js');
 
-        // Helper: get available slots for a single date
+        // Helper: get available slots for a single date using agent's business hours config
         const getAvailableForDate = async (dateStr: string) => {
-          const { startDate: dayStart, endDate: dayEnd } = getDayRangeInTimezone(dateStr, customerTz);
-          // Check if weekend (Sat=6, Sun=0)
-          const dayOfWeek = dayStart.getDay();
-          if (dayOfWeek === 0 || dayOfWeek === 6) {
-            return { date: dateStr, available: [] as string[], booked: [] as string[], isWeekend: true };
+          const allSlots = generateSlots(bhConfig, dateStr);
+          const isClosed = !isWorkingDay(bhConfig, dateStr);
+
+          if (isClosed || allSlots.length === 0) {
+            return { date: dateStr, available: [] as string[], booked: [] as string[], isClosed: true };
           }
+
+          const { startDate: dayStart, endDate: dayEnd } = getDayRangeInTimezone(dateStr, customerTz);
           const existingApts = await db.query.appointments.findMany({
             where: and(
               eq(appointments.customerId, agentRecord.customerId),
@@ -532,14 +554,15 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
           const busyTimes = existingApts
             .filter((a) => a.status !== 'cancelled')
             .map((a) => formatTimeInTimezone(new Date(a.scheduledAt), customerTz));
-          const available = BUSINESS_SLOTS.filter((t) => !busyTimes.includes(t));
-          return { date: dateStr, available, booked: busyTimes, isWeekend: false };
+          const available = allSlots.filter((t) => !busyTimes.includes(t));
+          return { date: dateStr, available, booked: busyTimes, isClosed: false };
         };
 
         // Check the requested date
         const result = await getAvailableForDate(requestedDate);
+        const allSlotsForDate = generateSlots(bhConfig, requestedDate);
 
-        // If the requested date has NO available slots, also check next 3 weekdays
+        // If the requested date has NO available slots, also check next 3 working days
         let nextDaysAvailability: Array<{ date: string; available_count: number; sample_slots: string[] }> = [];
         if (result.available.length === 0) {
           const baseDate = new Date(requestedDate + 'T12:00:00');
@@ -550,7 +573,7 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
             nextDate.setDate(nextDate.getDate() + offset);
             const nextDateStr = nextDate.toISOString().split('T')[0]!;
             const nextResult = await getAvailableForDate(nextDateStr);
-            if (!nextResult.isWeekend && nextResult.available.length > 0) {
+            if (!nextResult.isClosed && nextResult.available.length > 0) {
               nextDaysAvailability.push({
                 date: nextDateStr,
                 available_count: nextResult.available.length,
@@ -562,21 +585,23 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
           }
         }
 
+        const bhSummary = getBusinessHoursSummary(bhConfig);
+
         return c.json({
           date: requestedDate,
-          business_hours: '09:00-17:00 (Δευ-Παρ), μεσημεριανό διάλειμμα 12:30-14:00',
-          total_slots: BUSINESS_SLOTS.length,
+          business_hours: bhSummary,
+          total_slots: allSlotsForDate.length,
           booked_count: result.booked.length,
           available_count: result.available.length,
-          is_weekend: result.isWeekend,
+          is_closed: result.isClosed,
           available_slots: result.available.map((time) => ({
             date: requestedDate, time, available: true,
           })),
           booked_slots: result.booked,
-          ...(result.available.length === 0 && !result.isWeekend
+          ...(result.available.length === 0 && !result.isClosed
             ? { message: `Η ${requestedDate} είναι πλήρης. Δες τις εναλλακτικές ημερομηνίες παρακάτω.` }
-            : result.isWeekend
-            ? { message: `Η ${requestedDate} είναι Σαββατοκύριακο. Δεν δεχόμαστε ραντεβού. Δες τις εναλλακτικές ημερομηνίες παρακάτω.` }
+            : result.isClosed
+            ? { message: `Η ${requestedDate} είναι κλειστά. Δεν δεχόμαστε ραντεβού. Δες τις εναλλακτικές ημερομηνίες παρακάτω.` }
             : {}),
           ...(nextDaysAvailability.length > 0
             ? { next_available_days: nextDaysAvailability }
@@ -591,41 +616,46 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
         const callerPhone = parameters?.caller_phone as string;
         const serviceType = parameters?.service_type as string | undefined;
         const notes = parameters?.notes as string | undefined;
-        const BUSINESS_SLOTS = ['09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '12:00', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30', '17:00'];
 
         log.info({ date, time, callerName, callerPhone }, 'Booking appointment via ElevenLabs tool');
 
         if (agentRecord && date && time) {
+          const bhConfig = parseBusinessHours(agentRecord.businessHours);
           const { parseDateTimeInTimezone: parseDT, getDayRangeInTimezone, formatTimeInTimezone } = await import('../services/timezone.js');
 
-          // ── Weekend check ────────────────────────────────────────
-          const dateObj = new Date(date + 'T12:00:00');
-          const dayOfWeek = dateObj.getDay();
-          if (dayOfWeek === 0 || dayOfWeek === 6) {
+          // ── Closed day check ─────────────────────────────────────
+          if (!isWorkingDay(bhConfig, date)) {
             return c.json({
               success: false,
-              message: `Η ${date} είναι Σαββατοκύριακο. Δεν δεχόμαστε ραντεβού. Ρώτα τον πελάτη για ημέρα Δευτέρα-Παρασκευή.`,
+              message: `Η ${date} είναι κλειστά. Δεν δεχόμαστε ραντεβού. Ρώτα τον πελάτη για εργάσιμη ημέρα.`,
             });
           }
 
           // ── Business hours check ─────────────────────────────────
-          if (!BUSINESS_SLOTS.includes(time)) {
+          const validSlots = generateSlots(bhConfig, date);
+          if (!validSlots.includes(time)) {
             const toMinutes = (t: string) => {
               const [h, m] = t.split(':');
               return parseInt(h ?? '0', 10) * 60 + parseInt(m ?? '0', 10);
             };
             const reqMin = toMinutes(time);
             // Find nearest valid business slot
-            const nearest = BUSINESS_SLOTS.reduce((closest, slot) =>
-              Math.abs(toMinutes(slot) - reqMin) < Math.abs(toMinutes(closest) - reqMin) ? slot : closest
-            );
+            const nearest = validSlots.length > 0
+              ? validSlots.reduce((closest, slot) =>
+                  Math.abs(toMinutes(slot) - reqMin) < Math.abs(toMinutes(closest) - reqMin) ? slot : closest
+                )
+              : null;
+
+            const bhSummary = getBusinessHoursSummary(bhConfig);
             return c.json({
               success: false,
               outside_business_hours: true,
               requested_time: time,
-              message: `Η ώρα ${time} είναι εκτός ωραρίου (09:00-17:00, διάλειμμα 12:30-14:00). Η πιο κοντινή διαθέσιμη ώρα είναι ${nearest}.`,
+              message: nearest
+                ? `Η ώρα ${time} είναι εκτός ωραρίου (${bhSummary}). Η πιο κοντινή διαθέσιμη ώρα είναι ${nearest}.`
+                : `Η ώρα ${time} είναι εκτός ωραρίου (${bhSummary}). Δεν υπάρχουν διαθέσιμα slots.`,
               nearest_valid_time: nearest,
-              business_hours: '09:00-12:00, 14:00-17:00 (Δευ-Παρ)',
+              business_hours: bhSummary,
             });
           }
 
@@ -655,7 +685,7 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
 
           if (busyTimes.includes(time)) {
             // Find nearest available slot
-            const freeSlots = BUSINESS_SLOTS.filter(t => !busyTimes.includes(t));
+            const freeSlots = validSlots.filter(t => !busyTimes.includes(t));
 
             // Find closest free slot to the requested time
             let nearestSlot: string | null = null;
@@ -690,7 +720,7 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
             callerPhone: callerPhone ?? 'unknown',
             serviceType: serviceType ?? null,
             scheduledAt,
-            durationMinutes: 30,
+            durationMinutes: bhConfig.slotDurationMinutes,
             notes: notes ?? `Κλείστηκε μέσω AI. Καλών: ${callerName ?? 'N/A'}`,
             status: 'pending',
           }).returning();
@@ -711,12 +741,14 @@ elevenlabsWebhookRoutes.post('/server-tool', async (c) => {
       }
 
       case 'get_business_hours': {
+        const bhConfig = parseBusinessHours(agentRecord?.businessHours);
+        const hoursDisplay = formatBusinessHoursForDisplay(bhConfig);
+        const summary = getBusinessHoursSummary(bhConfig);
         return c.json({
-          hours: {
-            monday: '09:00-17:00', tuesday: '09:00-17:00',
-            wednesday: '09:00-17:00', thursday: '09:00-17:00',
-            friday: '09:00-17:00', saturday: 'Κλειστά', sunday: 'Κλειστά',
-          },
+          hours: hoursDisplay,
+          slot_duration_minutes: bhConfig.slotDurationMinutes,
+          closed_dates: bhConfig.closedDates,
+          summary,
           timezone: customerTz,
         });
       }
